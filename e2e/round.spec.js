@@ -16,6 +16,9 @@ async function recordA(page, ms) {
   await btn(page, 'Завершить запись').click();
 }
 
+// waits out the tap guard after a take ends (600 ms) or a chunk change (400 ms)
+const afterGuard = (page) => page.waitForTimeout(700);
+
 test('start screen shows title, slider and the silent-mode hint', async ({ page }) => {
   await page.goto('./');
   await expect(page.locator('section[data-screen="start"]')).toBeVisible();
@@ -86,6 +89,7 @@ test('playing while re-recording finishes the take, then plays it', async ({ pag
   await page.locator('#chunk-slider').fill('1');
   await recordA(page, 2000);
   await expect(page.locator('#plan-info')).toHaveAttribute('data-n', '2');
+  await afterGuard(page);
   await btn(page, 'Перезаписать').click();
   await expect(btn(page, 'Завершить запись')).toBeVisible();
   await page.waitForTimeout(4000);
@@ -124,6 +128,7 @@ test('«Дальше: игрок Б» is unavailable while the mic is opening', 
   await startGame(page);
   await recordA(page, 2000);
   await expect(btn(page, 'Дальше: игрок Б')).toBeVisible();
+  await afterGuard(page);
   await page.evaluate(() => (window.__gumDelay = 1500));
   await btn(page, 'Перезаписать').click();
   // right away, while getUserMedia is still pending: hidden, and even a
@@ -151,6 +156,7 @@ test('«Переслушать» while the mic is opening cancels the take and p
   await recordA(page, 4000);
   await expect(page.locator('#plan-info')).toHaveAttribute('data-n', /^[3-6]$/);
   const nBefore = await page.locator('#plan-info').getAttribute('data-n');
+  await afterGuard(page);
   await page.evaluate(() => (window.__gumDelay = 1500));
   await btn(page, 'Перезаписать').click();
   await expect(btn(page, 'Завершить запись')).toBeVisible();
@@ -183,6 +189,7 @@ test('audio that cannot start shows the real error', async ({ page }) => {
   await startGame(page);
   await recordA(page, 2000);
   await expect(btn(page, 'Переслушать')).toBeVisible();
+  await afterGuard(page);
   await page.evaluate(() => {
     const proto = Object.getPrototypeOf(AudioContext.prototype); // BaseAudioContext
     Object.defineProperty(proto, 'state', { configurable: true, get: () => 'interrupted' });
@@ -192,6 +199,95 @@ test('audio that cannot start shows the real error', async ({ page }) => {
   await btn(page, 'Переслушать').click();
   await expect(page.locator('#error')).toBeVisible();
   await expect(page.locator('#error')).toContainText('InvalidStateError: resume blocked by test');
+});
+
+// Starts watching `selector`: window.__endedAt is set (page clock) the moment it
+// gets hidden. window.__played turns true if any button starts playing after that.
+async function watchHidden(page, selector) {
+  await page.evaluate((sel) => {
+    window.__endedAt = null;
+    window.__played = false;
+    new MutationObserver(() => {
+      if (window.__endedAt !== null && document.querySelector('button.playing')) window.__played = true;
+    }).observe(document.body, { subtree: true, attributeFilter: ['class'] });
+    const node = document.querySelector(sel);
+    new MutationObserver((_, o) => {
+      if (!node.hidden) return;
+      window.__endedAt = performance.now();
+      o.disconnect();
+    }).observe(node, { attributeFilter: ['hidden'] });
+  }, selector);
+}
+
+// Taps the centre of `box` with the real mouse; returns ms between the take
+// ending (watchHidden) and the tap reaching the page.
+async function tapAt(page, box) {
+  await page.evaluate(() => {
+    document.addEventListener('click', () => (window.__tapAt = performance.now()), { capture: true, once: true });
+  });
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  return page.evaluate(() => window.__tapAt - window.__endedAt);
+}
+
+test('A: a second tap where «Завершить запись» was does not play the take', async ({ page }) => {
+  await startGame(page);
+  await btn(page, 'Записать').click();
+  const finish = btn(page, 'Завершить запись');
+  await expect(finish).toBeVisible();
+  await page.waitForTimeout(2000);
+  const box = await finish.boundingBox();
+  await watchHidden(page, '#btn-a-finish');
+  await finish.click();
+  await page.waitForFunction(() => window.__endedAt !== null, null, { polling: 'raf' });
+  // the record/finish slot keeps its place; «Переслушать» is below it
+  const rerecord = await btn(page, 'Перезаписать').boundingBox();
+  expect(Math.abs(rerecord.y - box.y)).toBeLessThan(1);
+  expect((await btn(page, 'Переслушать').boundingBox()).y).toBeGreaterThan(box.y + box.height);
+  expect(await tapAt(page, box)).toBeLessThan(600);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__played)).toBe(false);
+  expect(await finish.isVisible()).toBe(false); // nor a new take
+  await expect(btn(page, 'Перезаписать')).toBeVisible();
+  // once the guard is over the same spot works again
+  await afterGuard(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(btn(page, 'Завершить запись')).toBeVisible();
+});
+
+test('B: a second tap where «Завершить запись» was is ignored', async ({ page }) => {
+  await toB(page);
+  await btn(page, 'Записать').click();
+  const finish = btn(page, 'Завершить запись');
+  await expect(finish).toBeVisible();
+  await page.waitForTimeout(1000);
+  const box = await finish.boundingBox();
+  await watchHidden(page, '#btn-b-finish');
+  await finish.click();
+  await page.waitForFunction(() => window.__endedAt !== null, null, { polling: 'raf' });
+  expect(Math.abs((await btn(page, 'Перезаписать').boundingBox()).y - box.y)).toBeLessThan(1);
+  expect(await tapAt(page, box)).toBeLessThan(600);
+  await page.waitForTimeout(300);
+  expect(await finish.isVisible()).toBe(false); // no new take
+  expect(await page.evaluate(() => window.__played)).toBe(false);
+});
+
+test('B: a double tap on «Дальше» moves one chunk only', async ({ page }) => {
+  await toB(page);
+  await recordB(page, 800);
+  await btn(page, 'Дальше').click();
+  await recordB(page, 800);
+  await afterGuard(page);
+  await btn(page, 'Назад').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 1 из 2');
+  await afterGuard(page);
+  await btn(page, 'Дальше').dblclick();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await page.waitForTimeout(300);
+  await expect(section(page, 'B')).toBeVisible(); // not on to the result
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await afterGuard(page);
+  await btn(page, 'Назад').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 1 из 2');
 });
 
 test('next goes to player B', async ({ page }) => {
@@ -288,6 +384,7 @@ test('«Назад» keeps the take of the previous chunk', async ({ page }) => 
   await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
   await expect(btn(page, 'Переслушать мою')).toBeHidden();
   await expect(btn(page, 'К результату')).toBeDisabled();
+  await afterGuard(page);
   await btn(page, 'Назад').click();
   await expect(page.locator('#chunk-label')).toHaveText('Кусок 1 из 2');
   await expect(btn(page, 'Переслушать мою')).toBeVisible();
@@ -303,6 +400,7 @@ test('B: «Дальше» and «Назад» are unavailable while recording or 
   await btn(page, 'Дальше').click();
   await recordB(page, 1000);
   await expect(btn(page, 'К результату')).toBeEnabled();
+  await afterGuard(page);
   await page.evaluate(() => (window.__gumDelay = 1500));
   await btn(page, 'Перезаписать').click();
   // right away, while getUserMedia is still pending: both disabled, and even
@@ -353,6 +451,7 @@ test('B: an undecodable take is kept as silence and does not block «Дальш�
   await expect(page.locator('#b-empty')).toBeVisible();
   await expect(btn(page, 'Дальше')).toBeEnabled();
   // the hint is about the stored take: it hides while a new one is being recorded
+  await afterGuard(page);
   await btn(page, 'Перезаписать').click();
   await expect(btn(page, 'Завершить запись')).toBeVisible();
   await expect(page.locator('#b-empty')).toBeHidden();
@@ -469,6 +568,7 @@ test('reload resumes', async ({ page }) => {
   await btn(page, 'Переслушать мою').click();
   await expect(btn(page, 'Переслушать мою')).toHaveClass(/\bplaying\b/);
   // the resumed round keeps going and keeps being saved
+  await afterGuard(page);
   await btn(page, 'Дальше').click();
   await recordB(page, 1000);
   await reload(page);

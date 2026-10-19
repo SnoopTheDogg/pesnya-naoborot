@@ -15,6 +15,11 @@ import {
 import * as storage from './storage.js';
 
 const MAX_RECORD_SEC = 60;
+// After a take ends the buttons under the finger change; a second tap of the
+// same gesture must not start a sound or a new take (A's take is a spoiler).
+const TAKE_GUARD_MS = 600;
+// A double tap on «Дальше»/«Назад» must move one chunk only.
+const NAV_GUARD_MS = 400;
 const EMPTY_B_SEC = 0.1; // an empty/undecodable B take is stored as this much silence
 const MIC_HELP = 'Разреши микрофон: Настройки → Safari → Микрофон';
 const SOUND_HELP = 'Звука нет: нажми кнопку ещё раз, выключи бесшумный режим и прибавь громкость';
@@ -36,6 +41,17 @@ let roundRate = 0;
 // { key, round, started: Promise, handle: null until the mic is open,
 //   startedAt, tick, limit, finishing: Promise|null, cancelled }
 let rec = null;
+let takeEndedAt = -Infinity; // performance.now() when the last take was handled
+let navAt = -Infinity; // performance.now() of the last chunk change
+
+const since = (t) => performance.now() - t;
+const takeJustEnded = () => since(takeEndedAt) < TAKE_GUARD_MS;
+
+// A chunk change (or moving on to B) is a deliberate tap: the take guard ends there.
+function navigated() {
+  navAt = performance.now();
+  takeEndedAt = -Infinity;
+}
 
 // ---- dom ----
 const $ = (sel) => document.querySelector(sel);
@@ -166,12 +182,14 @@ function finishRecording({ cancelPending = false } = {}) {
     setRecordingMode(false);
     if (r.cancelled) {
       if (rec === r) rec = null;
+      takeEndedAt = performance.now();
       render();
       return;
     }
     const { samples, error } = await toSamples(blob);
     if (rec === r) rec = null;
     onRecorded(r, samples, error);
+    takeEndedAt = performance.now();
     render();
   })();
   render();
@@ -356,7 +374,10 @@ function loadSaved() {
 // Play button behaviour: ends a running take first (keeping it; a take whose
 // mic is still opening is cancelled), toggles off if this id is already
 // playing, otherwise plays.
+// Starting a sound right after a take ended is ignored (see TAKE_GUARD_MS);
+// stopping one is not.
 async function togglePlay(id, getSamples) {
+  if (!rec && playingId() !== id && takeJustEnded()) return;
   getContext();
   if (rec) {
     await finishRecording({ cancelPending: true });
@@ -409,7 +430,7 @@ function renderStart() {
 function renderA() {
   const recording = rec !== null && rec.key === 'A';
   const hasTake = Boolean(audio.A);
-  el.timer.hidden = !recording;
+  el.timer.classList.toggle('off', !recording);
   if (recording) renderTimer();
   el.btnARecord.hidden = recording;
   el.btnARecord.textContent = hasTake ? 'Перезаписать' : 'Записать';
@@ -435,7 +456,7 @@ function renderB() {
   const hasTake = Boolean(audio[key]);
   el.chunkLabel.textContent = `Кусок ${i + 1} из ${state.n}`;
   renderPlayButton(el.btnSlice, `slice${i}`);
-  el.bTimer.hidden = !recording;
+  el.bTimer.classList.toggle('off', !recording);
   if (recording) renderTimer();
   el.btnBRecord.hidden = recording;
   el.btnBRecord.textContent = hasTake ? 'Перезаписать' : 'Записать';
@@ -515,6 +536,7 @@ onTap(el.btnNew, () => {
 });
 
 onTap(el.btnARecord, () => {
+  if (takeJustEnded()) return undefined;
   ui.aTooShort = false;
   return beginRecording('A');
 });
@@ -525,6 +547,7 @@ onTap(el.btnAListen, () => togglePlay('A', () => audio.A));
 onTap(el.btnToB, () => {
   if (rec || !game.canStartB(state)) return;
   stop();
+  navigated();
   state = game.startB(state);
   audio.slices = splitEqual(reverseSamples(audio.A), state.n);
   persist();
@@ -538,7 +561,7 @@ onTap(el.btnSlice, () => {
   return togglePlay(`slice${i}`, () => audio.slices && audio.slices[i]);
 });
 onTap(el.btnBRecord, () => {
-  if (state.phase !== 'B') return undefined;
+  if (state.phase !== 'B' || takeJustEnded()) return undefined;
   return beginRecording(bKey(state.current));
 });
 onTap(el.btnBFinish, () => finishRecording());
@@ -559,8 +582,9 @@ function computeResult() {
 }
 
 onTap(el.btnBNext, () => {
-  if (rec || !game.canNext(state)) return;
+  if (rec || !game.canNext(state) || since(navAt) < NAV_GUARD_MS) return;
   stop();
+  navigated();
   state = game.next(state);
   if (state.phase === 'final') computeResult();
   persist();
@@ -568,8 +592,9 @@ onTap(el.btnBNext, () => {
   render();
 });
 onTap(el.btnBBack, () => {
-  if (rec || state.phase !== 'B' || state.current === 0) return;
+  if (rec || state.phase !== 'B' || state.current === 0 || since(navAt) < NAV_GUARD_MS) return;
   stop();
+  navigated();
   state = game.back(state);
   persist();
   ui.error = '';
