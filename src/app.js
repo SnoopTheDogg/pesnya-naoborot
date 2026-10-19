@@ -3,18 +3,30 @@
 import { MIN_A_SEC, trimSilence } from './audio-math.js';
 import * as game from './game.js';
 import { startRecording } from './recorder.js';
-import { decodeToMono, getContext, play, playingId, setRecordingMode, stop } from './player.js';
+import {
+  decodeToMono,
+  getContext,
+  onAudioError,
+  play,
+  playingId,
+  setRecordingMode,
+  stop,
+} from './player.js';
 
 const MAX_RECORD_SEC = 60;
-const PERMISSION_ERRORS = new Set(['NotAllowedError', 'SecurityError', 'PermissionDeniedError']);
 const MIC_HELP = 'Разреши микрофон: Настройки → Safari → Микрофон';
+const SOUND_HELP = 'Звука нет: нажми кнопку ещё раз, выключи бесшумный режим и прибавь громкость';
 
 // ---- app state ----
 let state = game.newGame();
 let audio = {}; // 'A', 'B0'..'B(n-1)' → Float32Array (mono, AudioContext sample rate)
 const ui = { screen: 'start', error: '', aTooShort: false };
-let rec = null; // { key, handle, startedAt, tick, limit, finishing }
-let starting = false; // waiting for the mic to open
+let round = 0; // bumped by «Новая игра»; takes from an older round are dropped
+// The current take, set synchronously when «Записать» is tapped, so the
+// mic-opening window counts as recording everywhere.
+// { key, round, started: Promise, handle: null until the mic is open,
+//   startedAt, tick, limit, finishing: Promise|null, cancelled }
+let rec = null;
 
 // ---- dom ----
 const $ = (sel) => document.querySelector(sel);
@@ -53,16 +65,16 @@ function formatTimer(sec) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-function describeError(e) {
+function describeError(e, help) {
   const name = (e && e.name) || 'Error';
   const message = (e && e.message) || String(e);
   const text = `${name}: ${message}`;
-  return PERMISSION_ERRORS.has(name) ? `${text}\n${MIC_HELP}` : text;
+  return help ? `${text}\n${help}` : text;
 }
 
-function showError(e) {
+function showError(e, help) {
   console.error(e);
-  ui.error = describeError(e);
+  ui.error = describeError(e, help);
   render();
 }
 
@@ -77,57 +89,84 @@ async function toSamples(blob) {
   }
 }
 
-async function beginRecording(key) {
-  if (rec || starting) return;
+// Starts a take for `key` ('A', 'B0'..). Resolves once the mic is open (or failed).
+function beginRecording(key) {
+  if (rec) return rec.started;
   getContext();
   stop();
   ui.error = '';
-  starting = true;
-  render();
+  const r = { key, round, handle: null, startedAt: 0, finishing: null, cancelled: false };
+  rec = r;
   setRecordingMode(true);
-  try {
-    const handle = await startRecording();
-    rec = { key, handle, startedAt: performance.now(), finishing: null };
-    rec.tick = setInterval(renderTimer, 200);
-    rec.limit = setTimeout(() => finishRecording(), MAX_RECORD_SEC * 1000);
-  } catch (e) {
-    setRecordingMode(false);
-    ui.error = describeError(e);
-    console.error(e);
-  } finally {
-    starting = false;
+  r.started = (async () => {
+    try {
+      r.handle = await startRecording();
+    } catch (e) {
+      if (rec === r) rec = null;
+      setRecordingMode(false);
+      if (!r.cancelled) showError(e, MIC_HELP);
+      return;
+    }
+    if (r.cancelled || r.finishing) return; // finishRecording() takes it from here
+    stop(); // nothing may play while recording
+    r.startedAt = performance.now();
+    r.tick = setInterval(renderTimer, 200);
+    r.limit = setTimeout(() => finishRecording(), MAX_RECORD_SEC * 1000);
     render();
-  }
+  })();
+  render();
+  return r.started;
 }
 
-// Stops the current take, decodes and stores it. Safe to call repeatedly.
-function finishRecording() {
+// Ends the current take; it is decoded and stored. With cancelPending, a take
+// whose mic is still opening is cancelled instead (mic released, previous take
+// kept). Without it, the take is ended as soon as the mic opens (a too-short
+// take). Safe to call repeatedly; resolves when the take is fully handled.
+function finishRecording({ cancelPending = false } = {}) {
   if (!rec) return Promise.resolve();
   if (rec.finishing) return rec.finishing;
   const r = rec;
-  clearInterval(r.tick);
-  clearTimeout(r.limit);
+  r.cancelled = cancelPending && r.handle === null;
   r.finishing = (async () => {
+    await r.started;
+    clearInterval(r.tick);
+    clearTimeout(r.limit);
     let blob = null;
-    try {
-      blob = await r.handle.finish();
-    } catch (e) {
-      ui.error = describeError(e);
-      console.error(e);
-    } finally {
-      setRecordingMode(false);
+    if (r.handle) {
+      try {
+        blob = await r.handle.finish();
+      } catch (e) {
+        ui.error = describeError(e);
+        console.error(e);
+      }
+    }
+    setRecordingMode(false);
+    if (r.cancelled) {
+      if (rec === r) rec = null;
+      render();
+      return;
     }
     const { samples, error } = await toSamples(blob);
-    rec = null;
-    onRecorded(r.key, samples, error);
+    if (rec === r) rec = null;
+    onRecorded(r, samples, error);
     render();
   })();
   render();
   return r.finishing;
 }
 
-function onRecorded(key, samples, decodeError) {
-  if (key === 'A') {
+// A take may only land in the round and phase it was recorded for.
+function takeBelongs(r) {
+  if (r.round !== round) return false;
+  return r.key === 'A' ? state.phase === 'A' : state.phase === 'B';
+}
+
+function onRecorded(r, samples, decodeError) {
+  if (!takeBelongs(r)) {
+    console.warn(`take ${r.key} dropped: game moved on`);
+    return;
+  }
+  if (r.key === 'A') {
     const sec = samples ? samples.length / getContext().sampleRate : 0;
     if (!samples || sec < MIN_A_SEC) {
       if (decodeError) console.warn('A take not decodable', decodeError);
@@ -143,17 +182,19 @@ function onRecorded(key, samples, decodeError) {
   // B takes ('B0'..) are handled by the B screen.
 }
 
-// Play button behaviour: finishes a running take first (keeping it), toggles
-// off if this id is already playing, otherwise plays.
+// Play button behaviour: ends a running take first (keeping it; a take whose
+// mic is still opening is cancelled), toggles off if this id is already
+// playing, otherwise plays.
 async function togglePlay(id, getSamples) {
   getContext();
   if (rec) {
-    await finishRecording();
+    await finishRecording({ cancelPending: true });
   } else if (playingId() === id) {
     stop();
     render();
     return;
   }
+  if (rec) return; // another take started meanwhile
   const samples = getSamples();
   if (samples) play(id, samples, render);
   render();
@@ -166,7 +207,8 @@ function currentScreen() {
 
 function renderTimer() {
   if (!rec) return;
-  el.timer.textContent = formatTimer((performance.now() - rec.startedAt) / 1000);
+  const sec = rec.handle ? (performance.now() - rec.startedAt) / 1000 : 0;
+  el.timer.textContent = formatTimer(sec);
 }
 
 function renderChunkBox(screen) {
@@ -192,7 +234,6 @@ function renderA() {
   el.btnARecord.hidden = recording;
   el.btnARecord.textContent = hasTake ? 'Перезаписать' : 'Записать';
   el.btnARecord.classList.toggle('primary', !hasTake);
-  el.btnARecord.disabled = starting;
   el.btnAFinish.hidden = !recording;
   el.btnAFinish.disabled = Boolean(rec && rec.finishing);
   el.aShort.hidden = !ui.aTooShort || recording;
@@ -203,7 +244,7 @@ function renderA() {
   el.planInfo.textContent = n
     ? `Выйдет ${n} ${plural(n, 'кусок', 'куска', 'кусков')} по ~${decimal(sliceSec, 1)} с`
     : '';
-  el.btnToB.hidden = recording || !game.canStartB(state);
+  el.btnToB.hidden = rec !== null || !game.canStartB(state);
 }
 
 function renderB() {
@@ -243,6 +284,8 @@ el.chunkSlider.addEventListener('input', () => {
 onTap(el.btnNew, () => {
   getContext();
   stop();
+  if (rec) finishRecording({ cancelPending: true });
+  round += 1;
   state = game.newGame(state.chunkSec);
   audio = {};
   ui.screen = 'game';
@@ -256,6 +299,7 @@ onTap(el.btnARecord, () => {
   return beginRecording('A');
 });
 onTap(el.btnAFinish, () => finishRecording());
+onAudioError((e) => showError(e, SOUND_HELP));
 onTap(el.btnAListen, () => togglePlay('A', () => audio.A));
 
 onTap(el.btnToB, () => {

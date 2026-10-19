@@ -3,6 +3,22 @@ import { mixToMono } from './audio-math.js';
 
 let ctx = null;
 let current = null; // { id, source, onEnd }
+let errorHandler = (e) => console.error(e);
+let resumeError = null; // last failure of ctx.resume(), already reported
+
+// The player has no UI: problems that would otherwise be silent (the context
+// cannot resume, playback started but the context is not running) go here.
+export function onAudioError(handler) {
+  errorHandler = handler;
+}
+
+function report(e) {
+  try {
+    errorHandler(e);
+  } catch {
+    // never let reporting break playback
+  }
+}
 
 function setSessionType(type) {
   try {
@@ -22,12 +38,21 @@ export function setRecordingMode(on) {
 
 // Lazily created; call from a user gesture so iOS unlocks audio.
 export function getContext() {
-  if (!ctx) {
+  if (!ctx || ctx.state === 'closed') {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     ctx = new Ctor();
   }
   if (ctx.state !== 'running' && ctx.state !== 'closed') {
-    ctx.resume().catch(() => {});
+    resumeError = null;
+    const failed = (e) => {
+      resumeError = e;
+      report(e);
+    };
+    try {
+      ctx.resume().catch(failed);
+    } catch (e) {
+      failed(e);
+    }
   }
   return ctx;
 }
@@ -69,6 +94,19 @@ export function play(id, samples, onEnd) {
   };
   current = entry;
   source.start();
+  if (ac.state !== 'running') checkRunning(ac, entry);
+}
+
+const START_GRACE_MS = 1000;
+
+// A sound was started on a context that is not running yet; if it is still not
+// running shortly after, the user hears nothing — say so.
+function checkRunning(ac, entry) {
+  setTimeout(() => {
+    if (current === entry && ac.state !== 'running' && !resumeError) {
+      report(new DOMException(`звук не запустился, AudioContext в состоянии «${ac.state}»`, 'InvalidStateError'));
+    }
+  }, START_GRACE_MS);
 }
 
 export function stop() {
