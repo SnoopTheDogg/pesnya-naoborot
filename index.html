@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111318">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Песня наоборот</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="src/app.js"></script>
+</head>
+<body>
+  <main>
+    <div id="error" role="alert" hidden></div>
+
+    <section data-screen="start">
+      <h1>Песня наоборот</h1>
+      <p class="lead">А напевает песню, Б повторяет её задом наперёд по кусочкам, а потом все слушают, что вышло.</p>
+      <div class="chunk-slot"></div>
+      <button type="button" id="btn-new" class="primary">Новая игра</button>
+    </section>
+
+    <section data-screen="A" hidden>
+      <h2>Игрок А</h2>
+      <p class="lead">Отойди, чтобы никто не слышал, и напой песню.</p>
+      <div id="timer" class="timer" hidden>0:00</div>
+      <button type="button" id="btn-a-record" class="primary">Записать</button>
+      <button type="button" id="btn-a-finish" class="danger" hidden>Завершить запись</button>
+      <p id="a-short" class="warn" hidden>Слишком коротко, запиши ещё раз</p>
+      <div id="a-take" hidden>
+        <button type="button" id="btn-a-listen" aria-pressed="false">Переслушать</button>
+        <p class="hint">Если колонка подключена, звук пойдёт в неё</p>
+        <p id="plan-info" data-n="0"></p>
+      </div>
+      <div class="chunk-slot"></div>
+      <button type="button" id="btn-to-b" class="primary" hidden>Дальше: игрок Б</button>
+    </section>
+
+    <section data-screen="B" hidden>
+      <h2>Игрок Б</h2>
+      <p id="b-progress" class="lead"></p>
+    </section>
+
+    <section data-screen="final" hidden>
+      <h2>Результат</h2>
+    </section>
+
+    <div id="chunk-box" class="chunk-box">
+      <label for="chunk-slider">Длина куска <output id="chunk-value">5 с</output></label>
+      <input type="range" id="chunk-slider" min="1" max="8" step="0.5" value="5">
+    </div>
+  </main>
+  <footer>
+    <p id="hint-silent">Нет звука? Выключи бесшумный режим</p>
+  </footer>
+</body>
+</html>
