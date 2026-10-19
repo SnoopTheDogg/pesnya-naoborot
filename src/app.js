@@ -12,11 +12,13 @@ import {
   setRecordingMode,
   stop,
 } from './player.js';
+import * as storage from './storage.js';
 
 const MAX_RECORD_SEC = 60;
 const EMPTY_B_SEC = 0.1; // an empty/undecodable B take is stored as this much silence
 const MIC_HELP = 'Разреши микрофон: Настройки → Safari → Микрофон';
 const SOUND_HELP = 'Звука нет: нажми кнопку ещё раз, выключи бесшумный режим и прибавь громкость';
+const STORAGE_HELP = 'Играть можно, но после перезагрузки страницы раунд не восстановится';
 
 // ---- app state ----
 let state = game.newGame();
@@ -26,6 +28,8 @@ let audio = {};
 // emptyTakes: chunk indices whose B take came out empty and is stored as silence.
 const ui = { screen: 'start', error: '', aTooShort: false, emptyTakes: new Set() };
 let round = 0; // bumped by «Новая игра»; takes from an older round are dropped
+// Sample rate of this round's takes (0 until the first take). Saved with the round.
+let roundRate = 0;
 // The current take, set synchronously when «Записать» is tapped, so the
 // mic-opening window counts as recording everywhere.
 // { key, round, started: Promise, handle: null until the mic is open,
@@ -40,6 +44,7 @@ const el = {
   chunkBox: $('#chunk-box'),
   chunkSlider: $('#chunk-slider'),
   chunkValue: $('#chunk-value'),
+  btnContinue: $('#btn-continue'),
   btnNew: $('#btn-new'),
   timer: $('#timer'),
   btnARecord: $('#btn-a-record'),
@@ -186,32 +191,162 @@ function onRecorded(r, samples, decodeError) {
     console.warn(`take ${r.key} dropped: game moved on`);
     return;
   }
+  const rate = getContext().sampleRate;
+  // A is recorded before any B take, so it sets the round's rate
+  if (r.key === 'A' || !roundRate) roundRate = rate;
   if (r.key === 'A') {
-    const sec = samples ? samples.length / getContext().sampleRate : 0;
+    const sec = samples ? samples.length / rate : 0;
     if (!samples || sec < MIN_A_SEC) {
       if (decodeError) console.warn('A take not decodable', decodeError);
       delete audio.A;
       state = game.setRecordingA(state, null);
       ui.aTooShort = true;
+      persist();
     } else {
       audio.A = samples;
       state = game.setRecordingA(state, sec);
       ui.aTooShort = false;
+      persist('A');
     }
   }
   if (r.key.startsWith('B')) {
     // Any B take counts, even silence: otherwise a quiet chunk would block the game.
     const i = Number(r.key.slice(1)); // === state.current (takeBelongs)
-    if (samples) {
+    if (samples && samples.length) {
       audio[r.key] = samples;
       ui.emptyTakes.delete(i);
     } else {
       if (decodeError) console.warn(`B take ${i + 1} not decodable`, decodeError);
-      audio[r.key] = new Float32Array(Math.round(EMPTY_B_SEC * getContext().sampleRate));
+      audio[r.key] = new Float32Array(Math.round(EMPTY_B_SEC * rate));
       ui.emptyTakes.add(i);
     }
     state = game.setTake(state, i);
+    persist(r.key);
   }
+}
+
+// ---- saving the round (IndexedDB) ----
+// Only the last round is kept. It is saved once A has a take, after every state
+// change and every accepted take; «Новая игра» wipes it. If IndexedDB fails, the
+// real error is shown once and the game goes on in memory only.
+let storageOk = true;
+let roundSaved = false; // whether the store may hold a round right now
+let pendingSaves = 0; // exposed as body[data-saving] so tests can wait for commits
+let saved = null; // the round found at page load, offered by «Продолжить»
+
+function setSavedRound(found) {
+  saved = found;
+  document.body.dataset.savedRound = found ? 'yes' : 'no';
+}
+
+function onStorageError(e) {
+  if (!storageOk) return;
+  storageOk = false;
+  showError(e, STORAGE_HELP);
+  // don't leave a half-saved round to be offered after a reload (best effort:
+  // a failure here is not reported again)
+  track(storage.clearAll());
+}
+
+function track(promise) {
+  pendingSaves += 1;
+  document.body.dataset.saving = String(pendingSaves);
+  promise.catch(onStorageError).finally(() => {
+    pendingSaves -= 1;
+    document.body.dataset.saving = String(pendingSaves);
+  });
+}
+
+function clearSaved() {
+  if (!storageOk) return;
+  roundSaved = false;
+  track(storage.clearAll());
+}
+
+// Saves the round after a state change; `takeKey` also saves that take's audio.
+function persist(takeKey) {
+  if (!storageOk || ui.screen === 'start') return;
+  if (state.phase === 'A' && state.aDurationSec == null) {
+    // nothing recorded: not a round worth continuing
+    if (roundSaved) clearSaved();
+    return;
+  }
+  roundSaved = true;
+  if (takeKey) track(storage.saveAudio(takeKey, audio[takeKey]));
+  track(storage.saveState({ game: state, sampleRate: roundRate, emptyTakes: [...ui.emptyTakes] }));
+}
+
+// Checks a loaded round and picks the takes it needs; null if it cannot be resumed.
+function restorable(found) {
+  const snap = found && found.state;
+  let g = snap && snap.game;
+  if (!g || !(snap.sampleRate > 0) || g.aDurationSec == null || !found.audio.A) return null;
+  const takes = { A: found.audio.A };
+  if (g.phase === 'A') {
+    // the duration follows the stored take (a reload may have hit between the two writes)
+    g = game.setRecordingA(g, takes.A.length / snap.sampleRate);
+  } else if (g.phase === 'B' || g.phase === 'final') {
+    if (!(g.n > 0) || !Array.isArray(g.takes) || g.takes.length !== g.n) return null;
+    if (!Number.isInteger(g.current) || g.current < 0 || g.current >= g.n) return null;
+    for (let i = 0; i < g.n; i++) {
+      if (!g.takes[i]) {
+        if (g.phase === 'final') return null;
+        continue;
+      }
+      const take = found.audio[bKey(i)];
+      if (!take) return null;
+      takes[bKey(i)] = take;
+    }
+  } else {
+    return null;
+  }
+  const emptyTakes = Array.isArray(snap.emptyTakes) ? snap.emptyTakes.filter((i) => takes[bKey(i)]) : [];
+  return { game: g, sampleRate: snap.sampleRate, emptyTakes, audio: takes };
+}
+
+// «Продолжить»: puts the saved round back exactly where it was.
+function continueRound() {
+  if (!saved) return;
+  getContext(); // inside the tap, so iOS unlocks audio
+  stop();
+  const s = saved;
+  setSavedRound(null);
+  round += 1;
+  state = s.game;
+  if (state.phase === 'A') state = game.setChunkSec(state, Number(el.chunkSlider.value));
+  audio = s.audio;
+  // Takes keep the rate they were recorded at. If this AudioContext runs at
+  // another rate they still play, just a little faster/slower and higher/lower
+  // in pitch (accepted); durations shown use the saved rate.
+  roundRate = s.sampleRate;
+  if (state.phase !== 'A') audio.slices = splitEqual(reverseSamples(audio.A), state.n);
+  if (state.phase === 'final') computeResult();
+  ui.screen = 'game';
+  ui.aTooShort = false;
+  ui.emptyTakes = new Set(s.emptyTakes);
+  ui.error = '';
+  roundSaved = true;
+  persist(); // the chunk length may have been changed on the start screen
+  render();
+}
+
+function loadSaved() {
+  const roundAtLoad = round;
+  storage
+    .loadAll()
+    .then((found) => {
+      if (round !== roundAtLoad) return; // a new game was started meanwhile
+      const s = restorable(found);
+      if (found && !s) clearSaved();
+      roundSaved = Boolean(s);
+      if (s) state = game.newGame(s.game.chunkSec);
+      setSavedRound(s);
+      render();
+    })
+    .catch((e) => {
+      setSavedRound(null);
+      onStorageError(e);
+    });
 }
 
 // Play button behaviour: ends a running take first (keeping it; a take whose
@@ -262,6 +397,8 @@ function renderChunkBox(screen) {
 }
 
 function renderStart() {
+  el.btnContinue.hidden = !saved;
+  el.btnNew.classList.toggle('primary', !saved);
   el.btnNew.disabled = false;
 }
 
@@ -303,7 +440,7 @@ function renderB() {
   el.btnBFinish.disabled = Boolean(rec && rec.finishing);
   el.bTake.hidden = !hasTake;
   renderPlayButton(el.btnBListen, key);
-  el.bEmpty.hidden = !ui.emptyTakes.has(i);
+  el.bEmpty.hidden = !ui.emptyTakes.has(i) || recording;
   el.btnBBack.hidden = i === 0;
   el.btnBBack.disabled = busy;
   el.btnBNext.textContent = game.isLast(state) ? 'К результату' : 'Дальше';
@@ -312,7 +449,7 @@ function renderB() {
 }
 
 function renderFinal() {
-  const sec = audio.result ? audio.result.length / getContext().sampleRate : 0;
+  const sec = audio.result ? audio.result.length / (roundRate || getContext().sampleRate) : 0;
   el.resultInfo.dataset.seconds = sec.toFixed(2);
   el.resultInfo.textContent = `Результат: ${decimal(sec, 1)} с`;
   renderPlayButton(el.btnResult, 'result');
@@ -344,6 +481,7 @@ function onTap(node, handler) {
 
 el.chunkSlider.addEventListener('input', () => {
   state = game.setChunkSec(state, Number(el.chunkSlider.value));
+  persist();
   render();
 });
 
@@ -355,6 +493,9 @@ function resetRound(screen) {
   round += 1;
   state = game.newGame(state.chunkSec);
   audio = {};
+  roundRate = 0;
+  setSavedRound(null);
+  clearSaved();
   ui.screen = screen;
   ui.aTooShort = false;
   ui.emptyTakes = new Set();
@@ -362,6 +503,7 @@ function resetRound(screen) {
   render();
 }
 
+onTap(el.btnContinue, continueRound);
 onTap(el.btnNew, () => resetRound('game'));
 
 onTap(el.btnARecord, () => {
@@ -377,6 +519,7 @@ onTap(el.btnToB, () => {
   stop();
   state = game.startB(state);
   audio.slices = splitEqual(reverseSamples(audio.A), state.n);
+  persist();
   ui.error = '';
   render();
 });
@@ -407,6 +550,7 @@ onTap(el.btnBNext, () => {
   stop();
   state = game.next(state);
   if (state.phase === 'final') computeResult();
+  persist();
   ui.error = '';
   render();
 });
@@ -414,6 +558,7 @@ onTap(el.btnBBack, () => {
   if (rec || state.phase !== 'B' || state.current === 0) return;
   stop();
   state = game.back(state);
+  persist();
   ui.error = '';
   render();
 });
@@ -426,4 +571,6 @@ onTap(el.btnFinalNew, () => {
   resetRound('start');
 });
 
+document.body.dataset.saving = '0';
 render();
+loadSaved();

@@ -336,7 +336,7 @@ test('B accepts an instant (empty) take', async ({ page }) => {
   await btn(page, 'Завершить запись').click();
   await expect(btn(page, 'Переслушать мою')).toBeVisible();
   await expect(btn(page, 'Дальше')).toBeEnabled();
-  await expect(page.getByText('Слишком коротко, запиши ещё раз')).toBeHidden();
+  await expect(page.locator('#error')).toBeHidden();
 });
 
 test('B: an undecodable take is kept as silence and does not block «Дальше»', async ({ page }) => {
@@ -352,6 +352,13 @@ test('B: an undecodable take is kept as silence and does not block «Дальш�
   await recordB(page, 800);
   await expect(page.locator('#b-empty')).toBeVisible();
   await expect(btn(page, 'Дальше')).toBeEnabled();
+  // the hint is about the stored take: it hides while a new one is being recorded
+  await btn(page, 'Перезаписать').click();
+  await expect(btn(page, 'Завершить запись')).toBeVisible();
+  await expect(page.locator('#b-empty')).toBeHidden();
+  await page.waitForTimeout(500);
+  await btn(page, 'Завершить запись').click();
+  await expect(page.locator('#b-empty')).toBeVisible();
   await btn(page, 'Дальше').click();
   await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
   await expect(page.locator('#b-empty')).toBeHidden();
@@ -388,4 +395,215 @@ test('«Новая игра» on the final screen asks first', async ({ page }) 
   await btn(page, 'Новая игра').click();
   await expect(section(page, 'A')).toBeVisible();
   await expect(btn(page, 'Переслушать')).toBeHidden();
+});
+
+test('B: a take that decodes to nothing is kept as silence', async ({ page }) => {
+  await toB(page);
+  await page.evaluate(() => {
+    const proto = Object.getPrototypeOf(AudioContext.prototype); // BaseAudioContext
+    const empty = { numberOfChannels: 1, getChannelData: () => new Float32Array(0) };
+    proto.decodeAudioData = function (data, ok) {
+      if (ok) ok(empty);
+      return Promise.resolve(empty);
+    };
+  });
+  await recordB(page, 800);
+  await expect(page.locator('#b-empty')).toBeVisible();
+  await btn(page, 'Дальше').click();
+  await recordB(page, 800);
+  await btn(page, 'К результату').click();
+  await expect(page.locator('#result-info')).toHaveAttribute('data-seconds', '0.20');
+});
+
+// ---- surviving a reload (IndexedDB) ----
+
+const body = (page) => page.locator('body');
+
+// Waits until every pending IndexedDB write has committed, reloads, and waits
+// until the page has looked for a saved round.
+async function reload(page) {
+  await expect(body(page)).toHaveAttribute('data-saving', '0');
+  await page.reload();
+  await expect(body(page)).toHaveAttribute('data-saved-round', /^(yes|no)$/);
+  await expect(section(page, 'start')).toBeVisible();
+}
+
+async function toFinal(page) {
+  await toB(page);
+  await recordB(page, 1000);
+  await btn(page, 'Дальше').click();
+  await recordB(page, 1000);
+  await btn(page, 'К результату').click();
+  await expect(section(page, 'final')).toBeVisible();
+}
+
+test('no «Продолжить» without a saved round', async ({ page }) => {
+  await page.goto('./');
+  await expect(body(page)).toHaveAttribute('data-saved-round', 'no');
+  await expect(btn(page, 'Продолжить')).toBeHidden();
+  await expect(btn(page, 'Новая игра')).toBeVisible();
+  // a round with nothing recorded yet is not worth continuing
+  await btn(page, 'Новая игра').click();
+  await expect(section(page, 'A')).toBeVisible();
+  await reload(page);
+  await expect(btn(page, 'Продолжить')).toBeHidden();
+});
+
+test('reload resumes', async ({ page }) => {
+  await toB(page);
+  await recordB(page, 1000);
+  await btn(page, 'Дальше').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await reload(page);
+  await expect(btn(page, 'Продолжить')).toBeVisible();
+  await btn(page, 'Продолжить').click();
+  await expect(section(page, 'B')).toBeVisible();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await expect(btn(page, 'Переслушать мою')).toBeHidden();
+  await expect(btn(page, 'К результату')).toBeDisabled();
+  await btn(page, 'Послушать кусок').click();
+  await expect(btn(page, 'Послушать кусок')).toHaveClass(/\bplaying\b/);
+  await btn(page, 'Назад').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 1 из 2');
+  await expect(btn(page, 'Переслушать мою')).toBeVisible();
+  await btn(page, 'Переслушать мою').click();
+  await expect(btn(page, 'Переслушать мою')).toHaveClass(/\bplaying\b/);
+  // the resumed round keeps going and keeps being saved
+  await btn(page, 'Дальше').click();
+  await recordB(page, 1000);
+  await reload(page);
+  await btn(page, 'Продолжить').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await expect(btn(page, 'К результату')).toBeEnabled();
+  await expect(page.locator('#error')).toBeHidden();
+});
+
+test('reload on screen A keeps the take and the chunk length', async ({ page }) => {
+  await startGame(page);
+  await page.locator('#chunk-slider').fill('2');
+  await recordA(page, 4000);
+  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', '2');
+  await reload(page);
+  await expect(page.locator('#chunk-value')).toHaveText('2 с');
+  await btn(page, 'Продолжить').click();
+  await expect(section(page, 'A')).toBeVisible();
+  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', '2');
+  await expect(btn(page, 'Перезаписать')).toBeVisible();
+  await btn(page, 'Переслушать').click();
+  await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'true');
+  await btn(page, 'Дальше: игрок Б').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 1 из 2');
+});
+
+test('reload on the final screen restores a playable result', async ({ page }) => {
+  await toFinal(page);
+  const before = await page.locator('#result-info').getAttribute('data-seconds');
+  expect(Number(before)).toBeGreaterThan(1.5);
+  await reload(page);
+  await btn(page, 'Продолжить').click();
+  await expect(section(page, 'final')).toBeVisible();
+  await expect(page.locator('#result-info')).toHaveAttribute('data-seconds', before);
+  await btn(page, 'Слушать результат').click();
+  await expect(btn(page, 'Слушать результат')).toHaveClass(/\bplaying\b/);
+  await btn(page, 'Показать оригинал').click();
+  await expect(btn(page, 'Показать оригинал')).toHaveClass(/\bplaying\b/);
+  await expect(page.locator('#error')).toBeHidden();
+});
+
+test('a round saved at another sample rate still plays; seconds use the saved rate', async ({ page }) => {
+  await toFinal(page);
+  const before = Number(await page.locator('#result-info').getAttribute('data-seconds'));
+  await expect(body(page)).toHaveAttribute('data-saving', '0');
+  // pretend the takes were recorded at half this device's rate
+  await page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open('pesnya-naoborot');
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction('kv', 'readwrite');
+          const store = tx.objectStore('kv');
+          const get = store.get('state');
+          get.onsuccess = () => store.put({ ...get.result, sampleRate: get.result.sampleRate / 2 }, 'state');
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      }),
+  );
+  await reload(page);
+  await btn(page, 'Продолжить').click();
+  await expect(section(page, 'final')).toBeVisible();
+  const after = Number(await page.locator('#result-info').getAttribute('data-seconds'));
+  expect(Math.abs(after - before * 2)).toBeLessThan(0.02);
+  await btn(page, 'Слушать результат').click();
+  await expect(btn(page, 'Слушать результат')).toHaveClass(/\bplaying\b/);
+});
+
+test('«Новая игра» after reload starts fresh and forgets the saved round', async ({ page }) => {
+  await toB(page);
+  await recordB(page, 1000);
+  await reload(page);
+  await expect(btn(page, 'Продолжить')).toBeVisible();
+  await btn(page, 'Новая игра').click();
+  await expect(section(page, 'A')).toBeVisible();
+  await expect(btn(page, 'Переслушать')).toBeHidden();
+  await expect(btn(page, 'Записать')).toBeVisible();
+  await reload(page);
+  await expect(body(page)).toHaveAttribute('data-saved-round', 'no');
+  await expect(btn(page, 'Продолжить')).toBeHidden();
+});
+
+test('«Новая игра» on the final screen forgets the saved round', async ({ page }) => {
+  await toFinal(page);
+  page.once('dialog', (d) => d.accept());
+  await btn(page, 'Новая игра').click();
+  await expect(section(page, 'start')).toBeVisible();
+  await expect(btn(page, 'Продолжить')).toBeHidden();
+  await reload(page);
+  await expect(body(page)).toHaveAttribute('data-saved-round', 'no');
+  await expect(btn(page, 'Продолжить')).toBeHidden();
+});
+
+test('IndexedDB that cannot open: real error once, the game still works', async ({ page }) => {
+  await page.addInitScript(() => {
+    indexedDB.open = () => {
+      throw new DOMException('open blocked by test', 'SecurityError');
+    };
+  });
+  await page.goto('./');
+  await expect(page.locator('#error')).toContainText('SecurityError: open blocked by test');
+  await expect(btn(page, 'Продолжить')).toBeHidden();
+  await btn(page, 'Новая игра').click();
+  await page.locator('#chunk-slider').fill('2');
+  await recordA(page, 4000);
+  await btn(page, 'Дальше: игрок Б').click();
+  await recordB(page, 800);
+  await expect(btn(page, 'Дальше')).toBeEnabled();
+  await expect(page.locator('#error')).toBeHidden(); // shown once, not on every save
+});
+
+test('IndexedDB writes failing (quota): real error once, the game still works', async ({ page }) => {
+  await page.addInitScript(() => {
+    IDBObjectStore.prototype.put = function () {
+      throw new DOMException('quota hit by test', 'QuotaExceededError');
+    };
+  });
+  await startGame(page);
+  await page.locator('#chunk-slider').fill('2');
+  await recordA(page, 4000);
+  await expect(page.locator('#error')).toContainText('QuotaExceededError: quota hit by test');
+  await expect(btn(page, 'Дальше: игрок Б')).toBeVisible();
+  await btn(page, 'Дальше: игрок Б').click();
+  await recordB(page, 800);
+  await btn(page, 'Дальше').click();
+  await recordB(page, 800);
+  await btn(page, 'К результату').click();
+  await expect(section(page, 'final')).toBeVisible();
+  await expect(page.locator('#error')).toBeHidden();
+  await reload(page);
+  await expect(btn(page, 'Продолжить')).toBeHidden();
 });
