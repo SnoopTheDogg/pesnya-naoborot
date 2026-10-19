@@ -270,6 +270,29 @@ test('«Завершить запись» while the mic opens, then the mic fail
   await expect(btn(page, 'Дальше: игрок Б')).toBeVisible();
 });
 
+test('a take stops by itself at 60 s and says so', async ({ page }) => {
+  await page.clock.install();
+  await startGame(page);
+  await btn(page, 'Записать').click();
+  const timer = page.locator('#timer');
+  await expect(timer.getByText('Пой!')).toBeVisible();
+  await page.waitForTimeout(1000);
+  await page.clock.fastForward('01:00');
+  await expect(btn(page, 'Переслушать')).toBeVisible();
+  await expect(btn(page, 'Завершить запись')).toBeHidden();
+  await expect(timer.getByText('Запись остановлена: максимум 60 с')).toBeVisible();
+  await expect(page.locator('#error')).toBeHidden();
+  // it is about that take: the next one clears it
+  await afterGuard(page);
+  await btn(page, 'Перезаписать').click();
+  await expect(timer.getByText('Запись остановлена: максимум 60 с')).toBeHidden();
+  await expect(timer.getByText('Пой!')).toBeVisible();
+  await page.waitForTimeout(500);
+  await btn(page, 'Завершить запись').click();
+  await expect(btn(page, 'Перезаписать')).toBeVisible();
+  expect(await timer.getByText('Запись остановлена: максимум 60 с').isVisible()).toBe(false);
+});
+
 test('mic not found also shows the real error and the mic help', async ({ page }) => {
   await page.addInitScript(() => {
     navigator.mediaDevices.getUserMedia = () =>

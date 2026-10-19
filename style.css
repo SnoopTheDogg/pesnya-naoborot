@@ -75,6 +75,7 @@ p { margin: 0; }
 .timer { gap: 18px; }
 .timer-wait { font-size: 24px; font-weight: 600; color: var(--muted); }
 .timer-cue { font-size: 34px; color: var(--accent); }
+.timer-info { font-size: 20px; font-weight: 600; color: var(--warn); text-align: center; }
 
 button {
   display: block;

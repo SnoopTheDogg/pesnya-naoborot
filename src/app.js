@@ -40,7 +40,16 @@ let audio = {};
 // emptyTakes: chunk indices whose B take came out empty and is stored as silence.
 // errorKind: 'audio' when the shown error is about sound not starting (it goes
 // away by itself once sound does start), '' otherwise.
-const ui = { screen: 'start', error: '', errorKind: '', aTooShort: false, emptyTakes: new Set() };
+// limitHit: the last take on this screen was stopped by MAX_RECORD_SEC (cleared
+// by the next take or leaving the screen/chunk).
+const ui = {
+  screen: 'start',
+  error: '',
+  errorKind: '',
+  aTooShort: false,
+  emptyTakes: new Set(),
+  limitHit: false,
+};
 let round = 0; // bumped by «Новая игра»; takes from an older round are dropped
 // Sample rate of this round's takes (0 until the first take). Saved with the round.
 let roundRate = 0;
@@ -60,6 +69,7 @@ const takeJustEnded = () => since(takeEndedAt) < TAKE_GUARD_MS;
 function navigated() {
   navAt = performance.now();
   takeEndedAt = -Infinity;
+  ui.limitHit = false;
 }
 
 // ---- dom ----
@@ -148,6 +158,7 @@ function beginRecording(key) {
   getContext();
   stop();
   setError('');
+  ui.limitHit = false;
   const r = { key, round, handle: null, live: false, startedAt: 0, finishing: null, cancelled: false };
   rec = r;
   setRecordingMode(true);
@@ -165,7 +176,11 @@ function beginRecording(key) {
     r.startedAt = performance.now();
     r.live = true;
     r.tick = setInterval(renderTimer, 200);
-    r.limit = setTimeout(() => finishRecording(), MAX_RECORD_SEC * 1000);
+    r.limit = setTimeout(() => {
+      if (rec !== r || r.finishing) return;
+      ui.limitHit = true;
+      finishRecording();
+    }, MAX_RECORD_SEC * 1000);
     render();
   })();
   render();
@@ -439,11 +454,14 @@ function renderTimer() {
 }
 
 // The slot above «Записать»/«Завершить запись»: «Включаю микрофон…» while the
-// mic opens, then the running timer with «Пой!». Its place is kept when idle.
+// mic opens, then the running timer with «Пой!»; after a take stopped at the
+// limit, a line saying so. Its place is kept when empty.
 function renderRecSlot(slot, finishBtn, recording) {
   const live = recording && rec.live;
-  slot.classList.toggle('off', !recording);
-  slot.querySelector('.timer-wait').hidden = live;
+  const info = !recording && ui.limitHit;
+  slot.classList.toggle('off', !recording && !info);
+  slot.querySelector('.timer-info').hidden = !info;
+  slot.querySelector('.timer-wait').hidden = live || info;
   slot.querySelector('.timer-clock').hidden = !live;
   slot.querySelector('.timer-cue').hidden = !live || Boolean(rec.finishing);
   if (recording) renderTimer();
@@ -567,6 +585,7 @@ function resetRound(screen) {
   ui.screen = screen;
   ui.aTooShort = false;
   ui.emptyTakes = new Set();
+  ui.limitHit = false;
   setError('');
   render();
 }
