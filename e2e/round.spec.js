@@ -697,3 +697,24 @@ test('«Продолжить» that fails half-way leaves the saved round on off
   await btn(page, 'Слушать результат').click();
   await expect(btn(page, 'Слушать результат')).toHaveClass(/\bplaying\b/);
 });
+
+test('home-screen manifest is linked and its icons are served as PNG', async ({ page, request }) => {
+  await page.goto('./');
+  const href = await page.locator('link[rel="manifest"]').getAttribute('href');
+  expect(href).toBeTruthy();
+  const manifestUrl = new URL(href, page.url()).href;
+  const res = await request.get(manifestUrl);
+  expect(res.status()).toBe(200);
+  const manifest = await res.json();
+  expect(manifest.name).toBe('Песня наоборот');
+  expect(manifest.icons.length).toBeGreaterThan(0);
+  for (const icon of manifest.icons) {
+    const r = await request.get(new URL(icon.src, manifestUrl).href);
+    expect(r.status(), icon.src).toBe(200);
+    expect(r.headers()['content-type'], icon.src).toContain('image/png');
+  }
+  const touch = await page.locator('link[rel="apple-touch-icon"]').getAttribute('href');
+  const tr = await request.get(new URL(touch, page.url()).href);
+  expect(tr.status()).toBe(200);
+  expect(tr.headers()['content-type']).toContain('image/png');
+});
