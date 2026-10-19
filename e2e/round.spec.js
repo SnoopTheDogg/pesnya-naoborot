@@ -173,6 +173,49 @@ test('«Переслушать» while the mic is opening cancels the take and p
   await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('while the mic opens the slot says so; once open it says «Пой!» with the timer', async ({ page }) => {
+  await slowMic(page);
+  await startGame(page);
+  await page.evaluate(() => (window.__gumDelay = 1500));
+  await btn(page, 'Записать').click();
+  const timer = page.locator('#timer');
+  await expect(timer.getByText('Включаю микрофон…')).toBeVisible();
+  expect(await timer.getByText('Пой!').isVisible()).toBe(false);
+  expect(await timer.locator('.timer-clock').isVisible()).toBe(false);
+  // «Завершить запись» is there, waiting, and still works
+  await expect(btn(page, 'Завершить запись')).toBeVisible();
+  await expect(btn(page, 'Завершить запись')).toHaveClass(/\bwaiting\b/);
+  await expect(btn(page, 'Завершить запись')).toBeEnabled();
+  await expect(timer.getByText('Пой!')).toBeVisible({ timeout: 5000 });
+  await expect(timer.locator('.timer-clock')).toBeVisible();
+  await expect(timer.locator('.timer-clock')).toHaveText(/^0:0\d$/);
+  expect(await timer.getByText('Включаю микрофон…').isVisible()).toBe(false);
+  await expect(btn(page, 'Завершить запись')).not.toHaveClass(/\bwaiting\b/);
+  await page.waitForTimeout(1200);
+  await expect(timer.locator('.timer-clock')).not.toHaveText('0:00');
+  await btn(page, 'Завершить запись').click();
+  await expect(btn(page, 'Переслушать')).toBeVisible();
+  // B gets the same cue
+  await afterGuard(page);
+  await page.locator('#chunk-slider').fill('8');
+  await btn(page, 'Дальше: игрок Б').click();
+  await btn(page, 'Записать').click();
+  await expect(page.locator('#b-timer').getByText('Включаю микрофон…')).toBeVisible();
+  await expect(page.locator('#b-timer').getByText('Пой!')).toBeVisible({ timeout: 5000 });
+});
+
+test('«Завершить запись» while the mic opens ends the take once it is open', async ({ page }) => {
+  await slowMic(page);
+  await startGame(page);
+  await page.evaluate(() => (window.__gumDelay = 1000));
+  await btn(page, 'Записать').click();
+  await expect(page.locator('#timer').getByText('Включаю микрофон…')).toBeVisible();
+  await btn(page, 'Завершить запись').click();
+  await expect(page.getByText('Слишком коротко, запиши ещё раз')).toBeVisible();
+  await expect(btn(page, 'Записать')).toBeVisible();
+  expect(await liveTracks(page)).toBe(0);
+});
+
 test('mic not found also shows the real error and the mic help', async ({ page }) => {
   await page.addInitScript(() => {
     navigator.mediaDevices.getUserMedia = () =>

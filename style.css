@@ -72,6 +72,9 @@ p { margin: 0; }
   color: var(--danger);
 }
 .timer.off { visibility: hidden; }
+.timer { gap: 18px; }
+.timer-wait { font-size: 24px; font-weight: 600; color: var(--muted); }
+.timer-cue { font-size: 34px; color: var(--accent); }
 
 button {
   display: block;
@@ -93,6 +96,8 @@ button:active { transform: scale(0.98); }
 button:disabled { opacity: 0.45; }
 button.primary { background: var(--accent); color: var(--accent-text); }
 button.danger { background: var(--danger); color: #fff; }
+/* «Завершить запись» while the mic is still opening: it works, the take just has not begun */
+button.waiting { opacity: 0.6; border-style: dashed; border-color: rgba(255, 255, 255, 0.75); }
 button.playing,
 button[aria-pressed="true"] {
   border-color: var(--accent);

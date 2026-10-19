@@ -29,7 +29,11 @@
     <section data-screen="A" hidden>
       <h2>Игрок А</h2>
       <p class="lead">Отойди, чтобы никто не слышал, и напой песню.</p>
-      <div id="timer" class="timer off">0:00</div>
+      <div id="timer" class="timer off">
+        <span class="timer-wait">Включаю микрофон…</span>
+        <span class="timer-clock" hidden>0:00</span>
+        <span class="timer-cue" hidden>Пой!</span>
+      </div>
       <button type="button" id="btn-a-record" class="primary">Записать</button>
       <button type="button" id="btn-a-finish" class="danger" hidden>Завершить запись</button>
       <p id="a-short" class="warn" hidden>Слишком коротко, запиши ещё раз</p>
@@ -47,7 +51,11 @@
       <p id="chunk-label" class="chunk-label"></p>
       <p class="lead">Послушай кусок и повтори его голосом как можно точнее.</p>
       <button type="button" id="btn-b-slice" aria-pressed="false">Послушать кусок</button>
-      <div id="b-timer" class="timer off">0:00</div>
+      <div id="b-timer" class="timer off">
+        <span class="timer-wait">Включаю микрофон…</span>
+        <span class="timer-clock" hidden>0:00</span>
+        <span class="timer-cue" hidden>Пой!</span>
+      </div>
       <button type="button" id="btn-b-record" class="primary">Записать</button>
       <button type="button" id="btn-b-finish" class="danger" hidden>Завершить запись</button>
       <div id="b-take" hidden>

@@ -39,7 +39,8 @@ let roundRate = 0;
 // The current take, set synchronously when «Записать» is tapped, so the
 // mic-opening window counts as recording everywhere.
 // { key, round, started: Promise, handle: null until the mic is open,
-//   startedAt, tick, limit, finishing: Promise|null, cancelled }
+//   live: true once the take is running (timer on), startedAt, tick, limit,
+//   finishing: Promise|null, cancelled }
 let rec = null;
 let takeEndedAt = -Infinity; // performance.now() when the last take was handled
 let navAt = -Infinity; // performance.now() of the last chunk change
@@ -134,7 +135,7 @@ function beginRecording(key) {
   getContext();
   stop();
   ui.error = '';
-  const r = { key, round, handle: null, startedAt: 0, finishing: null, cancelled: false };
+  const r = { key, round, handle: null, live: false, startedAt: 0, finishing: null, cancelled: false };
   rec = r;
   setRecordingMode(true);
   r.started = (async () => {
@@ -149,6 +150,7 @@ function beginRecording(key) {
     if (r.cancelled || r.finishing) return; // finishRecording() takes it from here
     stop(); // nothing may play while recording
     r.startedAt = performance.now();
+    r.live = true;
     r.tick = setInterval(renderTimer, 200);
     r.limit = setTimeout(() => finishRecording(), MAX_RECORD_SEC * 1000);
     render();
@@ -399,8 +401,23 @@ function currentScreen() {
 
 function renderTimer() {
   if (!rec) return;
-  const sec = rec.handle ? (performance.now() - rec.startedAt) / 1000 : 0;
-  (rec.key === 'A' ? el.timer : el.bTimer).textContent = formatTimer(sec);
+  const sec = rec.live ? (performance.now() - rec.startedAt) / 1000 : 0;
+  const slot = rec.key === 'A' ? el.timer : el.bTimer;
+  slot.querySelector('.timer-clock').textContent = formatTimer(sec);
+}
+
+// The slot above «Записать»/«Завершить запись»: «Включаю микрофон…» while the
+// mic opens, then the running timer with «Пой!». Its place is kept when idle.
+function renderRecSlot(slot, finishBtn, recording) {
+  const live = recording && rec.live;
+  slot.classList.toggle('off', !recording);
+  slot.querySelector('.timer-wait').hidden = live;
+  slot.querySelector('.timer-clock').hidden = !live;
+  slot.querySelector('.timer-cue').hidden = !live || Boolean(rec.finishing);
+  if (recording) renderTimer();
+  finishBtn.hidden = !recording;
+  finishBtn.disabled = Boolean(rec && rec.finishing);
+  finishBtn.classList.toggle('waiting', recording && !live);
 }
 
 // A play button shows (class `playing`, aria-pressed) whether its sound is playing.
@@ -430,13 +447,10 @@ function renderStart() {
 function renderA() {
   const recording = rec !== null && rec.key === 'A';
   const hasTake = Boolean(audio.A);
-  el.timer.classList.toggle('off', !recording);
-  if (recording) renderTimer();
+  renderRecSlot(el.timer, el.btnAFinish, recording);
   el.btnARecord.hidden = recording;
   el.btnARecord.textContent = hasTake ? 'Перезаписать' : 'Записать';
   el.btnARecord.classList.toggle('primary', !hasTake);
-  el.btnAFinish.hidden = !recording;
-  el.btnAFinish.disabled = Boolean(rec && rec.finishing);
   el.aShort.hidden = !ui.aTooShort || recording;
   el.aTake.hidden = !hasTake;
   renderPlayButton(el.btnAListen, 'A');
@@ -456,13 +470,10 @@ function renderB() {
   const hasTake = Boolean(audio[key]);
   el.chunkLabel.textContent = `Кусок ${i + 1} из ${state.n}`;
   renderPlayButton(el.btnSlice, `slice${i}`);
-  el.bTimer.classList.toggle('off', !recording);
-  if (recording) renderTimer();
+  renderRecSlot(el.bTimer, el.btnBFinish, recording);
   el.btnBRecord.hidden = recording;
   el.btnBRecord.textContent = hasTake ? 'Перезаписать' : 'Записать';
   el.btnBRecord.classList.toggle('primary', !hasTake);
-  el.btnBFinish.hidden = !recording;
-  el.btnBFinish.disabled = Boolean(rec && rec.finishing);
   el.bTake.hidden = !hasTake;
   renderPlayButton(el.btnBListen, key);
   el.bEmpty.hidden = !ui.emptyTakes.has(i) || recording;
