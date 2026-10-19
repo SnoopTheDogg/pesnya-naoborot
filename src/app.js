@@ -422,9 +422,8 @@ function loadSaved() {
 
 // Play button behaviour: ends a running take first (keeping it; a take whose
 // mic is still opening is cancelled), toggles off if this id is already
-// playing, otherwise plays.
-// Starting a sound right after a take ended is ignored (see TAKE_GUARD_MS);
-// stopping one is not.
+// playing, otherwise plays. Starting a sound right after a take ended is
+// ignored (see TAKE_GUARD_MS); stopping one is not.
 async function togglePlay(id, getSamples) {
   if (!rec && playingId() !== id && takeJustEnded()) return;
   getContext();

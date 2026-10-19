@@ -65,6 +65,7 @@ p { margin: 0; }
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 18px;
   font-size: 56px;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
@@ -72,7 +73,6 @@ p { margin: 0; }
   color: var(--danger);
 }
 .timer.off { visibility: hidden; }
-.timer { gap: 18px; }
 .timer-wait { font-size: 24px; font-weight: 600; color: var(--muted); }
 .timer-cue { font-size: 34px; color: var(--accent); }
 .timer-info { font-size: 20px; font-weight: 600; color: var(--warn); text-align: center; }
