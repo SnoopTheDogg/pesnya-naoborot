@@ -70,6 +70,35 @@ test('too short', async ({ page }) => {
   await expect(btn(page, 'Записать')).toBeVisible();
 });
 
+// Every decodeAudioData call fails like Safari does on a broken recording.
+async function blockDecode(page) {
+  await page.evaluate(() => {
+    const proto = Object.getPrototypeOf(AudioContext.prototype); // BaseAudioContext
+    proto.decodeAudioData = function (data, ok, fail) {
+      const e = new DOMException('decode blocked by test', 'EncodingError');
+      if (fail) fail(e);
+      return Promise.reject(e);
+    };
+  });
+}
+
+test('A: an undecodable take shows the real error along with «Слишком коротко»', async ({ page }) => {
+  await startGame(page);
+  await blockDecode(page);
+  await recordA(page, 1000);
+  await expect(page.getByText('Слишком коротко, запиши ещё раз')).toBeVisible();
+  await expect(page.locator('#error')).toContainText('EncodingError: decode blocked by test');
+  await expect(btn(page, 'Дальше: игрок Б')).toBeHidden();
+  // an instant take (under 0,5 s) that fails to decode is just too short
+  await afterGuard(page);
+  await btn(page, 'Записать').click();
+  await expect(page.locator('#error')).toBeHidden();
+  await btn(page, 'Завершить запись').click();
+  await expect(page.getByText('Слишком коротко, запиши ещё раз')).toBeVisible();
+  await page.waitForTimeout(300);
+  await expect(page.locator('#error')).toBeHidden();
+});
+
 test('mic denied', async ({ page }) => {
   await page.addInitScript(() => {
     navigator.mediaDevices.getUserMedia = () =>
@@ -482,17 +511,11 @@ test('B accepts an instant (empty) take', async ({ page }) => {
 
 test('B: an undecodable take is kept as silence and does not block «Дальше»', async ({ page }) => {
   await toB(page);
-  await page.evaluate(() => {
-    const proto = Object.getPrototypeOf(AudioContext.prototype); // BaseAudioContext
-    proto.decodeAudioData = function (data, ok, fail) {
-      const e = new DOMException('decode blocked by test', 'EncodingError');
-      if (fail) fail(e);
-      return Promise.reject(e);
-    };
-  });
+  await blockDecode(page);
   await recordB(page, 800);
   await expect(page.locator('#b-empty')).toBeVisible();
   await expect(btn(page, 'Дальше')).toBeEnabled();
+  await expect(page.locator('#error')).toContainText('EncodingError: decode blocked by test');
   // the hint is about the stored take: it hides while a new one is being recorded
   await afterGuard(page);
   await btn(page, 'Перезаписать').click();

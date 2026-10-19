@@ -21,6 +21,9 @@ const TAKE_GUARD_MS = 600;
 // A double tap on «Дальше»/«Назад» must move one chunk only.
 const NAV_GUARD_MS = 400;
 const EMPTY_B_SEC = 0.1; // an empty/undecodable B take is stored as this much silence
+// A take that ran at least this long and still fails to decode is reported:
+// that is a broken recording, not just an instant tap.
+const DECODE_REPORT_SEC = 0.5;
 const MIC_HELP = 'Разреши микрофон: Настройки → Safari → Микрофон';
 const SOUND_HELP = 'Звука нет: нажми кнопку ещё раз, выключи бесшумный режим и прибавь громкость';
 const STORAGE_HELP = 'Играть можно, но после перезагрузки страницы раунд не восстановится';
@@ -39,8 +42,8 @@ let roundRate = 0;
 // The current take, set synchronously when «Записать» is tapped, so the
 // mic-opening window counts as recording everywhere.
 // { key, round, started: Promise, handle: null until the mic is open,
-//   live: true once the take is running (timer on), startedAt, tick, limit,
-//   finishing: Promise|null, cancelled }
+//   live: true once the take is running (timer on), startedAt, endedAt, tick,
+//   limit, finishing: Promise|null, cancelled }
 let rec = null;
 let takeEndedAt = -Infinity; // performance.now() when the last take was handled
 let navAt = -Infinity; // performance.now() of the last chunk change
@@ -173,6 +176,7 @@ function finishRecording({ cancelPending = false } = {}) {
     clearInterval(r.tick);
     clearTimeout(r.limit);
     let blob = null;
+    r.endedAt = performance.now();
     if (r.handle) {
       try {
         blob = await r.handle.finish();
@@ -212,13 +216,18 @@ function onRecorded(r, samples, decodeError) {
     console.warn(`take ${r.key} dropped: game moved on`);
     return;
   }
+  const takeSec = r.live ? (r.endedAt - r.startedAt) / 1000 : 0;
+  if (decodeError) {
+    // the take is still handled below (too short on A, silence on B)
+    console.error(decodeError);
+    if (takeSec >= DECODE_REPORT_SEC) ui.error = describeError(decodeError);
+  }
   const rate = getContext().sampleRate;
   // A is recorded before any B take, so it sets the round's rate
   if (r.key === 'A' || !roundRate) roundRate = rate;
   if (r.key === 'A') {
     const sec = samples ? samples.length / rate : 0;
     if (!samples || sec < MIN_A_SEC) {
-      if (decodeError) console.warn('A take not decodable', decodeError);
       delete audio.A;
       state = game.setRecordingA(state, null);
       ui.aTooShort = true;
@@ -237,7 +246,6 @@ function onRecorded(r, samples, decodeError) {
       audio[r.key] = samples;
       ui.emptyTakes.delete(i);
     } else {
-      if (decodeError) console.warn(`B take ${i + 1} not decodable`, decodeError);
       audio[r.key] = new Float32Array(Math.round(EMPTY_B_SEC * rate));
       ui.emptyTakes.add(i);
     }
