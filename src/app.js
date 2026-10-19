@@ -28,6 +28,8 @@ const DECODE_REPORT_SEC = 0.5;
 const MIC_HELP = 'Разреши микрофон: Настройки → Safari → Микрофон';
 const SOUND_HELP = 'Звука нет: нажми кнопку ещё раз, выключи бесшумный режим и прибавь громкость';
 const STORAGE_HELP = 'Играть можно, но после перезагрузки страницы раунд не восстановится';
+// «Новая игра» waits for the saved round to be looked for, but not forever
+const LOAD_WAIT_MS = 3000;
 const NEW_GAME_CONFIRM = 'Начать новую игру? Записи этого раунда удалятся.';
 
 // ---- app state ----
@@ -272,6 +274,11 @@ let storageOk = true;
 let roundSaved = false; // whether the store may hold a round right now
 let pendingSaves = 0; // exposed as body[data-saving] so tests can wait for commits
 let saved = null; // the round found at page load, offered by «Продолжить»
+// Whether the page has finished looking for a saved round; until then «Новая
+// игра» is disabled (it would wipe a round not shown yet). If storage takes
+// longer than LOAD_WAIT_MS it comes back, and asks first.
+let loadSettled = false;
+let loadWaitOver = false;
 
 function setSavedRound(found) {
   saved = found;
@@ -374,9 +381,14 @@ function continueRound() {
 
 function loadSaved() {
   const roundAtLoad = round;
+  setTimeout(() => {
+    loadWaitOver = true;
+    render();
+  }, LOAD_WAIT_MS);
   storage
     .loadAll()
     .then((found) => {
+      loadSettled = true;
       if (round !== roundAtLoad) return; // a new game was started meanwhile
       const s = restorable(found);
       if (found && !s) clearSaved();
@@ -386,8 +398,10 @@ function loadSaved() {
       render();
     })
     .catch((e) => {
+      loadSettled = true;
       setSavedRound(null);
       onStorageError(e);
+      render();
     });
 }
 
@@ -459,7 +473,7 @@ function renderChunkBox(screen) {
 function renderStart() {
   el.btnContinue.hidden = !saved;
   el.btnNew.classList.toggle('primary', !saved);
-  el.btnNew.disabled = false;
+  el.btnNew.disabled = !loadSettled && !loadWaitOver;
 }
 
 function renderA() {
@@ -559,8 +573,10 @@ function resetRound(screen) {
 
 onTap(el.btnContinue, continueRound);
 onTap(el.btnNew, () => {
-  // a saved round is someone's takes: don't wipe it without asking
-  if (saved && !window.confirm(NEW_GAME_CONFIRM)) return;
+  if (!loadSettled && !loadWaitOver) return;
+  // a saved round is someone's takes (and one may still be loading): don't
+  // wipe it without asking
+  if ((saved || !loadSettled) && !window.confirm(NEW_GAME_CONFIRM)) return;
   resetRound('game');
 });
 

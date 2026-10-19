@@ -667,6 +667,66 @@ async function toFinal(page) {
   await expect(section(page, 'final')).toBeVisible();
 }
 
+// Delays the first IndexedDB open of each page load by sessionStorage.idbDelay ms
+// (sessionStorage survives reloads; no value = no delay).
+async function slowStorage(page) {
+  await page.addInitScript(() => {
+    const delay = Number(sessionStorage.getItem('idbDelay')) || 0;
+    if (!delay) return;
+    const open = indexedDB.open.bind(indexedDB);
+    const setOnSuccess = Object.getOwnPropertyDescriptor(IDBRequest.prototype, 'onsuccess').set;
+    let first = true;
+    indexedDB.open = (...args) => {
+      const req = open(...args);
+      if (!first) return req;
+      first = false;
+      Object.defineProperty(req, 'onsuccess', {
+        configurable: true,
+        set(fn) {
+          setOnSuccess.call(req, (ev) => setTimeout(() => fn.call(req, ev), delay));
+        },
+      });
+      return req;
+    };
+  });
+}
+
+// A round with one B take, saved, then a reload whose storage answers after `delay` ms.
+async function reloadWithSlowStorage(page, delay) {
+  await slowStorage(page);
+  await toB(page);
+  await recordB(page, 800);
+  await expect(body(page)).toHaveAttribute('data-saving', '0');
+  await page.evaluate((d) => sessionStorage.setItem('idbDelay', String(d)), delay);
+  await page.reload();
+  await expect(section(page, 'start')).toBeVisible();
+}
+
+test('«Новая игра» is disabled until the saved round has been looked for', async ({ page }) => {
+  await reloadWithSlowStorage(page, 1500);
+  await expect(btn(page, 'Новая игра')).toBeDisabled();
+  await expect(body(page)).toHaveAttribute('data-saved-round', 'yes');
+  await expect(btn(page, 'Новая игра')).toBeEnabled();
+  await expect(btn(page, 'Продолжить')).toBeVisible();
+});
+
+test('storage that takes too long: «Новая игра» comes back but asks first', async ({ page }) => {
+  await reloadWithSlowStorage(page, 6000);
+  await expect(btn(page, 'Новая игра')).toBeDisabled();
+  await expect(btn(page, 'Новая игра')).toBeEnabled({ timeout: 5000 });
+  expect(await body(page).getAttribute('data-saved-round')).toBeNull(); // still looking
+  const messages = [];
+  page.once('dialog', (d) => {
+    messages.push(d.message());
+    d.dismiss();
+  });
+  await btn(page, 'Новая игра').click();
+  await expect.poll(() => messages.length).toBe(1);
+  expect(messages[0]).toContain('Начать новую игру?');
+  await expect(section(page, 'start')).toBeVisible();
+  await expect(btn(page, 'Продолжить')).toBeVisible({ timeout: 10_000 });
+});
+
 test('no «Продолжить» without a saved round', async ({ page }) => {
   await page.goto('./');
   await expect(body(page)).toHaveAttribute('data-saved-round', 'no');
