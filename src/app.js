@@ -165,7 +165,8 @@ function beginRecording(key) {
 // Ends the current take; it is decoded and stored. With cancelPending, a take
 // whose mic is still opening is cancelled instead (mic released, previous take
 // kept). Without it, the take is ended as soon as the mic opens (a too-short
-// take). Safe to call repeatedly; resolves when the take is fully handled.
+// take); if the mic then fails to open, there was no take: the previous one is
+// kept. Safe to call repeatedly; resolves when the take is fully handled.
 function finishRecording({ cancelPending = false } = {}) {
   if (!rec) return Promise.resolve();
   if (rec.finishing) return rec.finishing;
@@ -173,6 +174,7 @@ function finishRecording({ cancelPending = false } = {}) {
   r.cancelled = cancelPending && r.handle === null;
   r.finishing = (async () => {
     await r.started;
+    if (!r.handle) r.cancelled = true; // the mic did not open (its error is shown)
     clearInterval(r.tick);
     clearTimeout(r.limit);
     let blob = null;

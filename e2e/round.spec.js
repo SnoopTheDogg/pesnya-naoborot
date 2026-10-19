@@ -132,15 +132,18 @@ test('playing while re-recording finishes the take, then plays it', async ({ pag
   await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'false');
 });
 
-// Wraps the real getUserMedia with a settable delay and keeps every stream it hands out.
+// Wraps the real getUserMedia with a settable delay and keeps every stream it
+// hands out; with window.__gumFail set it fails with that error name after the delay.
 async function slowMic(page) {
   await page.addInitScript(() => {
     const md = navigator.mediaDevices;
     const real = md.getUserMedia.bind(md);
     window.__gumDelay = 0;
+    window.__gumFail = null;
     window.__streams = [];
     md.getUserMedia = async (c) => {
       if (window.__gumDelay) await new Promise((r) => setTimeout(r, window.__gumDelay));
+      if (window.__gumFail) throw new DOMException('mic failed by test', window.__gumFail);
       const s = await real(c);
       window.__streams.push(s);
       return s;
@@ -243,6 +246,28 @@ test('«Завершить запись» while the mic opens ends the take once
   await expect(page.getByText('Слишком коротко, запиши ещё раз')).toBeVisible();
   await expect(btn(page, 'Записать')).toBeVisible();
   expect(await liveTracks(page)).toBe(0);
+});
+
+test('«Завершить запись» while the mic opens, then the mic fails: the old take is kept', async ({ page }) => {
+  await slowMic(page);
+  await startGame(page);
+  await page.locator('#chunk-slider').fill('1');
+  await recordA(page, 3000);
+  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', /^[2-4]$/);
+  const nBefore = await page.locator('#plan-info').getAttribute('data-n');
+  await afterGuard(page);
+  await page.evaluate(() => {
+    window.__gumDelay = 800;
+    window.__gumFail = 'NotReadableError';
+  });
+  await btn(page, 'Перезаписать').click();
+  await btn(page, 'Завершить запись').click();
+  await expect(page.locator('#error')).toContainText('NotReadableError: mic failed by test');
+  await expect(btn(page, 'Перезаписать')).toBeVisible();
+  await expect(btn(page, 'Переслушать')).toBeVisible();
+  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', nBefore);
+  await expect(page.getByText('Слишком коротко, запиши ещё раз')).toBeHidden();
+  await expect(btn(page, 'Дальше: игрок Б')).toBeVisible();
 });
 
 test('mic not found also shows the real error and the mic help', async ({ page }) => {
