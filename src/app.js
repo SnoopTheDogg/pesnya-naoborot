@@ -19,6 +19,7 @@ const EMPTY_B_SEC = 0.1; // an empty/undecodable B take is stored as this much s
 const MIC_HELP = 'Разреши микрофон: Настройки → Safari → Микрофон';
 const SOUND_HELP = 'Звука нет: нажми кнопку ещё раз, выключи бесшумный режим и прибавь громкость';
 const STORAGE_HELP = 'Играть можно, но после перезагрузки страницы раунд не восстановится';
+const NEW_GAME_CONFIRM = 'Начать новую игру? Записи этого раунда удалятся.';
 
 // ---- app state ----
 let state = game.newGame();
@@ -310,17 +311,20 @@ function continueRound() {
   getContext(); // inside the tap, so iOS unlocks audio
   stop();
   const s = saved;
+  let g = s.game;
+  if (g.phase === 'A') g = game.setChunkSec(g, Number(el.chunkSlider.value));
+  // derived audio first: if it fails, nothing has changed and «Продолжить» stays
+  const restored = { ...s.audio };
+  if (g.phase !== 'A') restored.slices = splitEqual(reverseSamples(restored.A), g.n);
+  if (g.phase === 'final') restored.result = resultOf(g, restored);
   setSavedRound(null);
   round += 1;
-  state = s.game;
-  if (state.phase === 'A') state = game.setChunkSec(state, Number(el.chunkSlider.value));
-  audio = s.audio;
+  state = g;
+  audio = restored;
   // Takes keep the rate they were recorded at. If this AudioContext runs at
   // another rate they still play, just a little faster/slower and higher/lower
   // in pitch (accepted); durations shown use the saved rate.
   roundRate = s.sampleRate;
-  if (state.phase !== 'A') audio.slices = splitEqual(reverseSamples(audio.A), state.n);
-  if (state.phase === 'final') computeResult();
   ui.screen = 'game';
   ui.aTooShort = false;
   ui.emptyTakes = new Set(s.emptyTakes);
@@ -504,7 +508,11 @@ function resetRound(screen) {
 }
 
 onTap(el.btnContinue, continueRound);
-onTap(el.btnNew, () => resetRound('game'));
+onTap(el.btnNew, () => {
+  // a saved round is someone's takes: don't wipe it without asking
+  if (saved && !window.confirm(NEW_GAME_CONFIRM)) return;
+  resetRound('game');
+});
 
 onTap(el.btnARecord, () => {
   ui.aTooShort = false;
@@ -539,10 +547,15 @@ onTap(el.btnBListen, () => {
   return togglePlay(key, () => audio[key]);
 });
 
+// The final result: every B take in order, reversed.
+function resultOf(g, takes) {
+  const parts = [];
+  for (let i = 0; i < g.n; i++) parts.push(takes[bKey(i)]);
+  return reverseSamples(concatSamples(parts));
+}
+
 function computeResult() {
-  const takes = [];
-  for (let i = 0; i < state.n; i++) takes.push(audio[bKey(i)]);
-  audio.result = reverseSamples(concatSamples(takes));
+  audio.result = resultOf(state, audio);
 }
 
 onTap(el.btnBNext, () => {
@@ -567,7 +580,7 @@ onTap(el.btnBBack, () => {
 onTap(el.btnResult, () => togglePlay('result', () => audio.result));
 onTap(el.btnOriginal, () => togglePlay('A', () => audio.A));
 onTap(el.btnFinalNew, () => {
-  if (!window.confirm('Начать новую игру? Записи этого раунда удалятся.')) return;
+  if (!window.confirm(NEW_GAME_CONFIRM)) return;
   resetRound('start');
 });
 

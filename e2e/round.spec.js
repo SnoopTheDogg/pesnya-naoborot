@@ -548,6 +548,21 @@ test('«Новая игра» after reload starts fresh and forgets the saved ro
   await recordB(page, 1000);
   await reload(page);
   await expect(btn(page, 'Продолжить')).toBeVisible();
+  // declining the prompt keeps the saved round
+  const messages = [];
+  page.once('dialog', (d) => {
+    messages.push(d.message());
+    d.dismiss();
+  });
+  await btn(page, 'Новая игра').click();
+  await expect.poll(() => messages.length).toBe(1);
+  expect(messages[0]).toContain('Начать новую игру?');
+  await expect(btn(page, 'Продолжить')).toBeVisible();
+  await reload(page);
+  await expect(body(page)).toHaveAttribute('data-saved-round', 'yes');
+  await expect(btn(page, 'Продолжить')).toBeVisible();
+  // accepting it starts fresh
+  page.once('dialog', (d) => d.accept());
   await btn(page, 'Новая игра').click();
   await expect(section(page, 'A')).toBeVisible();
   await expect(btn(page, 'Переслушать')).toBeHidden();
@@ -606,4 +621,79 @@ test('IndexedDB writes failing (quota): real error once, the game still works', 
   await expect(page.locator('#error')).toBeHidden();
   await reload(page);
   await expect(btn(page, 'Продолжить')).toBeHidden();
+});
+
+test('an IndexedDB request that fails later shows its real error', async ({ page }) => {
+  // put → add: the first write of a key works, rewriting it fails asynchronously
+  // (ConstraintError on the request, then the transaction aborts)
+  await page.addInitScript(() => {
+    IDBObjectStore.prototype.put = function (value, key) {
+      return this.add(value, key);
+    };
+  });
+  await startGame(page);
+  await page.locator('#chunk-slider').fill('2');
+  await recordA(page, 4000);
+  await btn(page, 'Дальше: игрок Б').click(); // rewrites 'state'
+  await expect(page.locator('#error')).toContainText('ConstraintError: ');
+  await expect(page.locator('#error')).not.toContainText('null');
+  await expect(section(page, 'B')).toBeVisible();
+  await recordB(page, 800);
+  await expect(btn(page, 'Дальше')).toBeEnabled();
+});
+
+test('a transient IndexedDB failure is retried on a fresh connection', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__opens = 0;
+    const open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = (...args) => {
+      window.__opens += 1;
+      return open(...args);
+    };
+    window.__failNextWrite = false;
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (names, mode) {
+      if (mode === 'readwrite' && window.__failNextWrite) {
+        window.__failNextWrite = false;
+        throw new DOMException('connection lost by test', 'InvalidStateError');
+      }
+      return transaction.call(this, names, mode);
+    };
+  });
+  await toB(page);
+  await expect(body(page)).toHaveAttribute('data-saving', '0');
+  const opensBefore = await page.evaluate(() => window.__opens);
+  await page.evaluate(() => (window.__failNextWrite = true));
+  await recordB(page, 1000);
+  await btn(page, 'Дальше').click();
+  await expect(body(page)).toHaveAttribute('data-saving', '0');
+  expect(await page.evaluate(() => window.__opens)).toBeGreaterThan(opensBefore);
+  await expect(page.locator('#error')).toBeHidden();
+  await reload(page);
+  await btn(page, 'Продолжить').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await btn(page, 'Назад').click();
+  await expect(btn(page, 'Переслушать мою')).toBeVisible();
+});
+
+test('«Продолжить» that fails half-way leaves the saved round on offer', async ({ page }) => {
+  await toFinal(page);
+  const before = await page.locator('#result-info').getAttribute('data-seconds');
+  await reload(page);
+  await page.evaluate(() => {
+    const real = Float32Array.prototype.slice;
+    Float32Array.prototype.slice = function () {
+      Float32Array.prototype.slice = real;
+      throw new RangeError('slice blocked by test');
+    };
+  });
+  await btn(page, 'Продолжить').click();
+  await expect(page.locator('#error')).toContainText('RangeError: slice blocked by test');
+  await expect(section(page, 'start')).toBeVisible();
+  await expect(btn(page, 'Продолжить')).toBeVisible();
+  await btn(page, 'Продолжить').click();
+  await expect(section(page, 'final')).toBeVisible();
+  await expect(page.locator('#result-info')).toHaveAttribute('data-seconds', before);
+  await btn(page, 'Слушать результат').click();
+  await expect(btn(page, 'Слушать результат')).toHaveClass(/\bplaying\b/);
 });
