@@ -298,6 +298,46 @@ test('audio that cannot start shows the real error', async ({ page }) => {
   await expect(page.locator('#error')).toContainText('InvalidStateError: resume blocked by test');
 });
 
+test('the sound error goes away once a sound does start', async ({ page }) => {
+  await startGame(page);
+  await recordA(page, 2000);
+  await afterGuard(page);
+  await page.evaluate(() => {
+    const proto = Object.getPrototypeOf(AudioContext.prototype); // BaseAudioContext
+    const state = Object.getOwnPropertyDescriptor(proto, 'state');
+    Object.defineProperty(proto, 'state', { configurable: true, get: () => 'interrupted' });
+    AudioContext.prototype.resume = () =>
+      Promise.reject(new DOMException('resume blocked by test', 'InvalidStateError'));
+    window.__unblockAudio = () => {
+      Object.defineProperty(proto, 'state', state);
+      delete AudioContext.prototype.resume;
+    };
+  });
+  await btn(page, 'Переслушать').click();
+  await expect(page.locator('#error')).toContainText('InvalidStateError: resume blocked by test');
+  await page.evaluate(() => window.__unblockAudio());
+  await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'false'); // the take ended
+  await btn(page, 'Переслушать').click();
+  await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#error')).toBeHidden();
+});
+
+test('a sound that starts does not clear an unrelated error', async ({ page }) => {
+  await page.addInitScript(() => {
+    IDBObjectStore.prototype.put = function () {
+      throw new DOMException('quota hit by test', 'QuotaExceededError');
+    };
+  });
+  await startGame(page);
+  await recordA(page, 2000);
+  await expect(page.locator('#error')).toContainText('QuotaExceededError: quota hit by test');
+  await afterGuard(page);
+  await btn(page, 'Переслушать').click();
+  await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'true');
+  await page.waitForTimeout(300);
+  await expect(page.locator('#error')).toContainText('QuotaExceededError: quota hit by test');
+});
+
 // Starts watching `selector`: window.__endedAt is set (page clock) the moment it
 // gets hidden. window.__played turns true if any button starts playing after that.
 async function watchHidden(page, selector) {

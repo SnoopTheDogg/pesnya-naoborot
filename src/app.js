@@ -7,6 +7,7 @@ import {
   decodeToMono,
   getContext,
   onAudioError,
+  onAudioOk,
   play,
   playingId,
   setRecordingMode,
@@ -35,7 +36,9 @@ let state = game.newGame();
 // 'slices' → the reversed A cut into n parts (set once on entering B).
 let audio = {};
 // emptyTakes: chunk indices whose B take came out empty and is stored as silence.
-const ui = { screen: 'start', error: '', aTooShort: false, emptyTakes: new Set() };
+// errorKind: 'audio' when the shown error is about sound not starting (it goes
+// away by itself once sound does start), '' otherwise.
+const ui = { screen: 'start', error: '', errorKind: '', aTooShort: false, emptyTakes: new Set() };
 let round = 0; // bumped by «Новая игра»; takes from an older round are dropped
 // Sample rate of this round's takes (0 until the first take). Saved with the round.
 let roundRate = 0;
@@ -115,9 +118,14 @@ function describeError(e, help) {
   return help ? `${text}\n${help}` : text;
 }
 
-function showError(e, help) {
+function setError(text, kind = '') {
+  ui.error = text;
+  ui.errorKind = text ? kind : '';
+}
+
+function showError(e, help, kind) {
   console.error(e);
-  ui.error = describeError(e, help);
+  setError(describeError(e, help), kind);
   render();
 }
 
@@ -137,7 +145,7 @@ function beginRecording(key) {
   if (rec) return rec.started;
   getContext();
   stop();
-  ui.error = '';
+  setError('');
   const r = { key, round, handle: null, live: false, startedAt: 0, finishing: null, cancelled: false };
   rec = r;
   setRecordingMode(true);
@@ -183,7 +191,7 @@ function finishRecording({ cancelPending = false } = {}) {
       try {
         blob = await r.handle.finish();
       } catch (e) {
-        ui.error = describeError(e);
+        setError(describeError(e));
         console.error(e);
       }
     }
@@ -222,7 +230,7 @@ function onRecorded(r, samples, decodeError) {
   if (decodeError) {
     // the take is still handled below (too short on A, silence on B)
     console.error(decodeError);
-    if (takeSec >= DECODE_REPORT_SEC) ui.error = describeError(decodeError);
+    if (takeSec >= DECODE_REPORT_SEC) setError(describeError(decodeError));
   }
   const rate = getContext().sampleRate;
   // A is recorded before any B take, so it sets the round's rate
@@ -358,7 +366,7 @@ function continueRound() {
   ui.screen = 'game';
   ui.aTooShort = false;
   ui.emptyTakes = new Set(s.emptyTakes);
-  ui.error = '';
+  setError('');
   roundSaved = true;
   persist(); // the chunk length may have been changed on the start screen
   render();
@@ -545,7 +553,7 @@ function resetRound(screen) {
   ui.screen = screen;
   ui.aTooShort = false;
   ui.emptyTakes = new Set();
-  ui.error = '';
+  setError('');
   render();
 }
 
@@ -562,7 +570,13 @@ onTap(el.btnARecord, () => {
   return beginRecording('A');
 });
 onTap(el.btnAFinish, () => finishRecording());
-onAudioError((e) => showError(e, SOUND_HELP));
+onAudioError((e) => showError(e, SOUND_HELP, 'audio'));
+// the sound did start after all: the «no sound» error is out of date
+onAudioOk(() => {
+  if (ui.errorKind !== 'audio') return;
+  setError('');
+  render();
+});
 onTap(el.btnAListen, () => togglePlay('A', () => audio.A));
 
 onTap(el.btnToB, () => {
@@ -572,7 +586,7 @@ onTap(el.btnToB, () => {
   state = game.startB(state);
   audio.slices = splitEqual(reverseSamples(audio.A), state.n);
   persist();
-  ui.error = '';
+  setError('');
   render();
 });
 
@@ -609,7 +623,7 @@ onTap(el.btnBNext, () => {
   state = game.next(state);
   if (state.phase === 'final') computeResult();
   persist();
-  ui.error = '';
+  setError('');
   render();
 });
 onTap(el.btnBBack, () => {
@@ -618,7 +632,7 @@ onTap(el.btnBBack, () => {
   navigated();
   state = game.back(state);
   persist();
-  ui.error = '';
+  setError('');
   render();
 });
 

@@ -4,6 +4,7 @@ import { mixToMono } from './audio-math.js';
 let ctx = null;
 let current = null; // { id, source, onEnd }
 let errorHandler = (e) => console.error(e);
+let okHandler = () => {};
 let resumeError = null; // last failure of ctx.resume(), already reported
 
 // The player has no UI: problems that would otherwise be silent (the context
@@ -12,9 +13,23 @@ export function onAudioError(handler) {
   errorHandler = handler;
 }
 
+// Called when sound is known to work again: the context reached 'running',
+// or a sound started on a running context.
+export function onAudioOk(handler) {
+  okHandler = handler;
+}
+
 function report(e) {
   try {
     errorHandler(e);
+  } catch {
+    // never let reporting break playback
+  }
+}
+
+function reportOk() {
+  try {
+    okHandler();
   } catch {
     // never let reporting break playback
   }
@@ -40,7 +55,11 @@ export function setRecordingMode(on) {
 export function getContext() {
   if (!ctx || ctx.state === 'closed') {
     const Ctor = window.AudioContext || window.webkitAudioContext;
-    ctx = new Ctor();
+    const created = new Ctor();
+    created.addEventListener('statechange', () => {
+      if (created.state === 'running') reportOk();
+    });
+    ctx = created;
   }
   if (ctx.state !== 'running' && ctx.state !== 'closed') {
     resumeError = null;
@@ -94,7 +113,8 @@ export function play(id, samples, onEnd) {
   };
   current = entry;
   source.start();
-  if (ac.state !== 'running') checkRunning(ac, entry);
+  if (ac.state === 'running') reportOk();
+  else checkRunning(ac, entry);
 }
 
 const START_GRACE_MS = 1000;
