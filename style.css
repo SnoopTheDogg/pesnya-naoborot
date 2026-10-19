@@ -86,12 +86,21 @@ button:active { transform: scale(0.98); }
 button:disabled { opacity: 0.45; }
 button.primary { background: var(--accent); color: var(--accent-text); }
 button.danger { background: var(--danger); color: #fff; }
+button.playing,
 button[aria-pressed="true"] {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(255, 176, 0, 0.35);
 }
 
-#a-take { display: flex; flex-direction: column; gap: 14px; }
+#a-take, #b-take { display: flex; flex-direction: column; gap: 14px; }
+
+.chunk-label { font-size: 26px; font-weight: 700; color: var(--accent); }
+#result-info { margin-top: -4px; font-size: 18px; }
+
+.nav { display: flex; gap: 12px; margin-top: 8px; }
+.nav button { flex: 1; }
+#btn-b-back { flex: 0 0 34%; }
+#btn-final-new { margin-top: 24px; }
 
 .chunk-box {
   display: flex;

@@ -1,6 +1,6 @@
 // UI wiring. One place owns `state` (pure game JSON) and `audio` (PCM takes);
 // each screen has its own render function.
-import { MIN_A_SEC, trimSilence } from './audio-math.js';
+import { concatSamples, MIN_A_SEC, reverseSamples, splitEqual, trimSilence } from './audio-math.js';
 import * as game from './game.js';
 import { startRecording } from './recorder.js';
 import {
@@ -14,13 +14,17 @@ import {
 } from './player.js';
 
 const MAX_RECORD_SEC = 60;
+const EMPTY_B_SEC = 0.1; // an empty/undecodable B take is stored as this much silence
 const MIC_HELP = 'Разреши микрофон: Настройки → Safari → Микрофон';
 const SOUND_HELP = 'Звука нет: нажми кнопку ещё раз, выключи бесшумный режим и прибавь громкость';
 
 // ---- app state ----
 let state = game.newGame();
-let audio = {}; // 'A', 'B0'..'B(n-1)' → Float32Array (mono, AudioContext sample rate)
-const ui = { screen: 'start', error: '', aTooShort: false };
+// 'A', 'B0'..'B(n-1)', 'result' → Float32Array (mono, AudioContext sample rate);
+// 'slices' → the reversed A cut into n parts (set once on entering B).
+let audio = {};
+// emptyTakes: chunk indices whose B take came out empty and is stored as silence.
+const ui = { screen: 'start', error: '', aTooShort: false, emptyTakes: new Set() };
 let round = 0; // bumped by «Новая игра»; takes from an older round are dropped
 // The current take, set synchronously when «Записать» is tapped, so the
 // mic-opening window counts as recording everywhere.
@@ -45,7 +49,20 @@ const el = {
   btnAListen: $('#btn-a-listen'),
   planInfo: $('#plan-info'),
   btnToB: $('#btn-to-b'),
-  bProgress: $('#b-progress'),
+  chunkLabel: $('#chunk-label'),
+  btnSlice: $('#btn-b-slice'),
+  bTimer: $('#b-timer'),
+  btnBRecord: $('#btn-b-record'),
+  btnBFinish: $('#btn-b-finish'),
+  bTake: $('#b-take'),
+  btnBListen: $('#btn-b-listen'),
+  bEmpty: $('#b-empty'),
+  btnBBack: $('#btn-b-back'),
+  btnBNext: $('#btn-b-next'),
+  btnResult: $('#btn-result'),
+  resultInfo: $('#result-info'),
+  btnOriginal: $('#btn-original'),
+  btnFinalNew: $('#btn-final-new'),
 };
 
 // ---- formatting ----
@@ -155,10 +172,13 @@ function finishRecording({ cancelPending = false } = {}) {
   return r.finishing;
 }
 
-// A take may only land in the round and phase it was recorded for.
+const bKey = (i) => `B${i}`; // audio key of chunk i's take
+
+// A take may only land in the round and phase it was recorded for; a B take
+// only on the chunk it was recorded for.
 function takeBelongs(r) {
   if (r.round !== round) return false;
-  return r.key === 'A' ? state.phase === 'A' : state.phase === 'B';
+  return r.key === 'A' ? state.phase === 'A' : state.phase === 'B' && r.key === bKey(state.current);
 }
 
 function onRecorded(r, samples, decodeError) {
@@ -179,7 +199,19 @@ function onRecorded(r, samples, decodeError) {
       ui.aTooShort = false;
     }
   }
-  // B takes ('B0'..) are handled by the B screen.
+  if (r.key.startsWith('B')) {
+    // Any B take counts, even silence: otherwise a quiet chunk would block the game.
+    const i = Number(r.key.slice(1)); // === state.current (takeBelongs)
+    if (samples) {
+      audio[r.key] = samples;
+      ui.emptyTakes.delete(i);
+    } else {
+      if (decodeError) console.warn(`B take ${i + 1} not decodable`, decodeError);
+      audio[r.key] = new Float32Array(Math.round(EMPTY_B_SEC * getContext().sampleRate));
+      ui.emptyTakes.add(i);
+    }
+    state = game.setTake(state, i);
+  }
 }
 
 // Play button behaviour: ends a running take first (keeping it; a take whose
@@ -208,7 +240,14 @@ function currentScreen() {
 function renderTimer() {
   if (!rec) return;
   const sec = rec.handle ? (performance.now() - rec.startedAt) / 1000 : 0;
-  el.timer.textContent = formatTimer(sec);
+  (rec.key === 'A' ? el.timer : el.bTimer).textContent = formatTimer(sec);
+}
+
+// A play button shows (class `playing`, aria-pressed) whether its sound is playing.
+function renderPlayButton(node, id) {
+  const on = playingId() === id;
+  node.classList.toggle('playing', on);
+  node.setAttribute('aria-pressed', String(on));
 }
 
 function renderChunkBox(screen) {
@@ -238,7 +277,7 @@ function renderA() {
   el.btnAFinish.disabled = Boolean(rec && rec.finishing);
   el.aShort.hidden = !ui.aTooShort || recording;
   el.aTake.hidden = !hasTake;
-  el.btnAListen.setAttribute('aria-pressed', String(playingId() === 'A'));
+  renderPlayButton(el.btnAListen, 'A');
   const { n, sliceSec } = game.plan(state);
   el.planInfo.dataset.n = String(n);
   el.planInfo.textContent = n
@@ -248,10 +287,37 @@ function renderA() {
 }
 
 function renderB() {
-  el.bProgress.textContent = `Кусок ${state.current + 1} из ${state.n}`;
+  const i = state.current;
+  const key = bKey(i);
+  const busy = rec !== null; // recording, or the mic is still opening
+  const recording = busy && rec.key === key;
+  const hasTake = Boolean(audio[key]);
+  el.chunkLabel.textContent = `Кусок ${i + 1} из ${state.n}`;
+  renderPlayButton(el.btnSlice, `slice${i}`);
+  el.bTimer.hidden = !recording;
+  if (recording) renderTimer();
+  el.btnBRecord.hidden = recording;
+  el.btnBRecord.textContent = hasTake ? 'Перезаписать' : 'Записать';
+  el.btnBRecord.classList.toggle('primary', !hasTake);
+  el.btnBFinish.hidden = !recording;
+  el.btnBFinish.disabled = Boolean(rec && rec.finishing);
+  el.bTake.hidden = !hasTake;
+  renderPlayButton(el.btnBListen, key);
+  el.bEmpty.hidden = !ui.emptyTakes.has(i);
+  el.btnBBack.hidden = i === 0;
+  el.btnBBack.disabled = busy;
+  el.btnBNext.textContent = game.isLast(state) ? 'К результату' : 'Дальше';
+  el.btnBNext.classList.toggle('primary', hasTake);
+  el.btnBNext.disabled = busy || !game.canNext(state);
 }
 
-function renderFinal() {}
+function renderFinal() {
+  const sec = audio.result ? audio.result.length / getContext().sampleRate : 0;
+  el.resultInfo.dataset.seconds = sec.toFixed(2);
+  el.resultInfo.textContent = `Результат: ${decimal(sec, 1)} с`;
+  renderPlayButton(el.btnResult, 'result');
+  renderPlayButton(el.btnOriginal, 'A');
+}
 
 const renderers = { start: renderStart, A: renderA, B: renderB, final: renderFinal };
 
@@ -281,18 +347,22 @@ el.chunkSlider.addEventListener('input', () => {
   render();
 });
 
-onTap(el.btnNew, () => {
+// Drops the round (takes, a running take) and shows `screen`. The chunk length is kept.
+function resetRound(screen) {
   getContext();
   stop();
   if (rec) finishRecording({ cancelPending: true });
   round += 1;
   state = game.newGame(state.chunkSec);
   audio = {};
-  ui.screen = 'game';
+  ui.screen = screen;
   ui.aTooShort = false;
+  ui.emptyTakes = new Set();
   ui.error = '';
   render();
-});
+}
+
+onTap(el.btnNew, () => resetRound('game'));
 
 onTap(el.btnARecord, () => {
   ui.aTooShort = false;
@@ -306,8 +376,54 @@ onTap(el.btnToB, () => {
   if (rec || !game.canStartB(state)) return;
   stop();
   state = game.startB(state);
+  audio.slices = splitEqual(reverseSamples(audio.A), state.n);
   ui.error = '';
   render();
+});
+
+// ---- player B ----
+onTap(el.btnSlice, () => {
+  const i = state.current;
+  return togglePlay(`slice${i}`, () => audio.slices && audio.slices[i]);
+});
+onTap(el.btnBRecord, () => {
+  if (state.phase !== 'B') return undefined;
+  return beginRecording(bKey(state.current));
+});
+onTap(el.btnBFinish, () => finishRecording());
+onTap(el.btnBListen, () => {
+  const key = bKey(state.current);
+  return togglePlay(key, () => audio[key]);
+});
+
+function computeResult() {
+  const takes = [];
+  for (let i = 0; i < state.n; i++) takes.push(audio[bKey(i)]);
+  audio.result = reverseSamples(concatSamples(takes));
+}
+
+onTap(el.btnBNext, () => {
+  if (rec || !game.canNext(state)) return;
+  stop();
+  state = game.next(state);
+  if (state.phase === 'final') computeResult();
+  ui.error = '';
+  render();
+});
+onTap(el.btnBBack, () => {
+  if (rec || state.phase !== 'B' || state.current === 0) return;
+  stop();
+  state = game.back(state);
+  ui.error = '';
+  render();
+});
+
+// ---- final ----
+onTap(el.btnResult, () => togglePlay('result', () => audio.result));
+onTap(el.btnOriginal, () => togglePlay('A', () => audio.A));
+onTap(el.btnFinalNew, () => {
+  if (!window.confirm('Начать новую игру? Записи этого раунда удалятся.')) return;
+  resetRound('start');
 });
 
 render();

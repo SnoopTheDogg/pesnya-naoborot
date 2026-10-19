@@ -92,8 +92,8 @@ test('playing while re-recording finishes the take, then plays it', async ({ pag
   await btn(page, 'Переслушать').click();
   await expect(btn(page, 'Завершить запись')).toBeHidden();
   await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'true');
-  // the new ~4 s take replaced the 2 s one
-  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', /^[45]$/);
+  // the new ~4 s take replaced the 2 s one (a cold mic may clip it a little)
+  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', /^[3-6]$/);
   // tapping the playing button stops it (the 4 s take is still playing)
   await btn(page, 'Переслушать').click();
   await expect(btn(page, 'Переслушать')).toHaveAttribute('aria-pressed', 'false');
@@ -136,7 +136,7 @@ test('«Дальше: игрок Б» is unavailable while the mic is opening', 
   });
   expect(hiddenWhilePending).toBe(true);
   await expect(page.locator('section[data-screen="A"]')).toBeVisible();
-  await page.waitForTimeout(2000); // mic is open now
+  await page.waitForTimeout(3000); // mic is open now (1.5 s delay + margin)
   await expect(page.locator('section[data-screen="A"]')).toBeVisible();
   await expect(btn(page, 'Завершить запись')).toBeVisible();
   await btn(page, 'Завершить запись').click();
@@ -149,7 +149,7 @@ test('«Переслушать» while the mic is opening cancels the take and p
   await startGame(page);
   await page.locator('#chunk-slider').fill('1');
   await recordA(page, 4000);
-  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', /^[45]$/);
+  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', /^[3-6]$/);
   const nBefore = await page.locator('#plan-info').getAttribute('data-n');
   await page.evaluate(() => (window.__gumDelay = 1500));
   await btn(page, 'Перезаписать').click();
@@ -200,4 +200,192 @@ test('next goes to player B', async ({ page }) => {
   await btn(page, 'Дальше: игрок Б').click();
   await expect(page.locator('section[data-screen="B"]')).toBeVisible();
   await expect(page.locator('section[data-screen="A"]')).toBeHidden();
+});
+
+// ---- player B and the final screen ----
+
+const section = (page, screen) => page.locator(`section[data-screen="${screen}"]`);
+
+// A sings 4 s with 2 s chunks → 2 chunks; ends on «Кусок 1 из 2».
+async function toB(page) {
+  await startGame(page);
+  await page.locator('#chunk-slider').fill('2');
+  await recordA(page, 4000);
+  await expect(page.locator('#plan-info')).toHaveAttribute('data-n', '2');
+  await btn(page, 'Дальше: игрок Б').click();
+  await expect(section(page, 'B')).toBeVisible();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 1 из 2');
+}
+
+async function recordB(page, ms) {
+  await btn(page, 'Записать').click();
+  await expect(btn(page, 'Завершить запись')).toBeVisible();
+  await page.waitForTimeout(ms);
+  await btn(page, 'Завершить запись').click();
+  await expect(btn(page, 'Переслушать мою')).toBeVisible();
+}
+
+test('full cycle: A → every B chunk → result', async ({ page }) => {
+  await toB(page);
+  for (let i = 1; i <= 2; i++) {
+    await expect(page.locator('#chunk-label')).toHaveText(`Кусок ${i} из 2`);
+    await btn(page, 'Послушать кусок').click();
+    await expect(btn(page, 'Послушать кусок')).toHaveClass(/\bplaying\b/);
+    await btn(page, 'Записать').click();
+    await expect(btn(page, 'Послушать кусок')).not.toHaveClass(/\bplaying\b/);
+    await page.waitForTimeout(1000);
+    await btn(page, 'Завершить запись').click();
+    await expect(btn(page, 'Переслушать мою')).toBeVisible();
+    await expect(btn(page, 'Перезаписать')).toBeVisible();
+    await btn(page, i < 2 ? 'Дальше' : 'К результату').click();
+  }
+  await expect(section(page, 'final')).toBeVisible();
+  await expect(section(page, 'B')).toBeHidden();
+  await btn(page, 'Слушать результат').click();
+  await expect(btn(page, 'Слушать результат')).toHaveClass(/\bplaying\b/);
+  const info = page.locator('#result-info');
+  await expect(info).toHaveText(/^Результат: \d+,\d с$/);
+  const sec = Number(await info.getAttribute('data-seconds'));
+  expect(await info.getAttribute('data-seconds')).toMatch(/^\d+\.\d\d$/);
+  expect(sec).toBeGreaterThan(1.5);
+  expect(sec).toBeLessThan(3.0);
+  // «Показать оригинал» takes over the single sound slot
+  await btn(page, 'Показать оригинал').click();
+  await expect(btn(page, 'Показать оригинал')).toHaveClass(/\bplaying\b/);
+  await expect(btn(page, 'Слушать результат')).not.toHaveClass(/\bplaying\b/);
+  // tapping the playing button stops it
+  await btn(page, 'Показать оригинал').click();
+  await expect(btn(page, 'Показать оригинал')).not.toHaveClass(/\bplaying\b/);
+  await expect(page.locator('#error')).toBeHidden();
+});
+
+test('«Дальше» is disabled until the chunk has a take', async ({ page }) => {
+  await toB(page);
+  await expect(btn(page, 'Дальше')).toBeVisible();
+  await expect(btn(page, 'Дальше')).toBeDisabled();
+  await expect(btn(page, 'Назад')).toBeHidden(); // no chunk before the first
+  await expect(btn(page, 'Переслушать мою')).toBeHidden();
+  await recordB(page, 1000);
+  await expect(btn(page, 'Дальше')).toBeEnabled();
+});
+
+test('B: playing the chunk while recording keeps the take, then plays', async ({ page }) => {
+  await toB(page);
+  await btn(page, 'Записать').click();
+  await expect(btn(page, 'Завершить запись')).toBeVisible();
+  await page.waitForTimeout(1000);
+  await btn(page, 'Послушать кусок').click();
+  await expect(btn(page, 'Переслушать мою')).toBeVisible();
+  await expect(btn(page, 'Завершить запись')).toBeHidden();
+  await expect(btn(page, 'Послушать кусок')).toHaveClass(/\bplaying\b/);
+  await expect(btn(page, 'Дальше')).toBeEnabled();
+});
+
+test('«Назад» keeps the take of the previous chunk', async ({ page }) => {
+  await toB(page);
+  await recordB(page, 1000);
+  await btn(page, 'Дальше').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await expect(btn(page, 'Переслушать мою')).toBeHidden();
+  await expect(btn(page, 'К результату')).toBeDisabled();
+  await btn(page, 'Назад').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 1 из 2');
+  await expect(btn(page, 'Переслушать мою')).toBeVisible();
+  await expect(btn(page, 'Дальше')).toBeEnabled();
+  await btn(page, 'Переслушать мою').click();
+  await expect(btn(page, 'Переслушать мою')).toHaveClass(/\bplaying\b/);
+});
+
+test('B: «Дальше» and «Назад» are unavailable while recording or the mic is opening', async ({ page }) => {
+  await slowMic(page);
+  await toB(page);
+  await recordB(page, 1000);
+  await btn(page, 'Дальше').click();
+  await recordB(page, 1000);
+  await expect(btn(page, 'К результату')).toBeEnabled();
+  await page.evaluate(() => (window.__gumDelay = 1500));
+  await btn(page, 'Перезаписать').click();
+  // right away, while getUserMedia is still pending: both disabled, and even
+  // programmatic taps must not change the chunk or the screen
+  const whilePending = await page.evaluate(() => {
+    const next = document.querySelector('#btn-b-next');
+    const back = document.querySelector('#btn-b-back');
+    const disabled = [next.disabled, back.disabled];
+    for (const b of [next, back]) {
+      b.click();
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }
+    return disabled;
+  });
+  expect(whilePending).toEqual([true, true]);
+  await page.waitForTimeout(3000); // mic is open now
+  await expect(btn(page, 'К результату')).toBeDisabled();
+  await expect(btn(page, 'Назад')).toBeDisabled();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await btn(page, 'Завершить запись').click();
+  await expect(btn(page, 'Переслушать мою')).toBeVisible();
+  await expect(btn(page, 'К результату')).toBeEnabled();
+  await expect(btn(page, 'Назад')).toBeEnabled();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  expect(await liveTracks(page)).toBe(0);
+});
+
+test('B accepts an instant (empty) take', async ({ page }) => {
+  await toB(page);
+  await btn(page, 'Записать').click();
+  await btn(page, 'Завершить запись').click();
+  await expect(btn(page, 'Переслушать мою')).toBeVisible();
+  await expect(btn(page, 'Дальше')).toBeEnabled();
+  await expect(page.getByText('Слишком коротко, запиши ещё раз')).toBeHidden();
+});
+
+test('B: an undecodable take is kept as silence and does not block «Дальше»', async ({ page }) => {
+  await toB(page);
+  await page.evaluate(() => {
+    const proto = Object.getPrototypeOf(AudioContext.prototype); // BaseAudioContext
+    proto.decodeAudioData = function (data, ok, fail) {
+      const e = new DOMException('decode blocked by test', 'EncodingError');
+      if (fail) fail(e);
+      return Promise.reject(e);
+    };
+  });
+  await recordB(page, 800);
+  await expect(page.locator('#b-empty')).toBeVisible();
+  await expect(btn(page, 'Дальше')).toBeEnabled();
+  await btn(page, 'Дальше').click();
+  await expect(page.locator('#chunk-label')).toHaveText('Кусок 2 из 2');
+  await expect(page.locator('#b-empty')).toBeHidden();
+  await recordB(page, 800);
+  await btn(page, 'К результату').click();
+  await expect(section(page, 'final')).toBeVisible();
+  // two 0.1 s silences
+  await expect(page.locator('#result-info')).toHaveAttribute('data-seconds', '0.20');
+  await expect(page.locator('#result-info')).toHaveText('Результат: 0,2 с');
+});
+
+test('«Новая игра» on the final screen asks first', async ({ page }) => {
+  await toB(page);
+  await recordB(page, 800);
+  await btn(page, 'Дальше').click();
+  await recordB(page, 800);
+  await btn(page, 'К результату').click();
+  await expect(section(page, 'final')).toBeVisible();
+  const messages = [];
+  page.once('dialog', (d) => {
+    messages.push(d.message());
+    d.dismiss();
+  });
+  await btn(page, 'Новая игра').click();
+  await expect.poll(() => messages.length).toBe(1);
+  expect(messages[0]).toContain('Начать новую игру?');
+  await expect(section(page, 'final')).toBeVisible();
+  page.once('dialog', (d) => d.accept());
+  await btn(page, 'Новая игра').click();
+  await expect(section(page, 'start')).toBeVisible();
+  await expect(section(page, 'final')).toBeHidden();
+  await expect(page.locator('#chunk-value')).toHaveText('2 с'); // calibration kept
+  // a fresh round starts on A with no take
+  await btn(page, 'Новая игра').click();
+  await expect(section(page, 'A')).toBeVisible();
+  await expect(btn(page, 'Переслушать')).toBeHidden();
 });

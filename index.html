@@ -39,11 +39,29 @@
 
     <section data-screen="B" hidden>
       <h2>Игрок Б</h2>
-      <p id="b-progress" class="lead"></p>
+      <p id="chunk-label" class="chunk-label"></p>
+      <p class="lead">Послушай кусок и повтори его голосом как можно точнее.</p>
+      <button type="button" id="btn-b-slice" aria-pressed="false">Послушать кусок</button>
+      <div id="b-timer" class="timer" hidden>0:00</div>
+      <button type="button" id="btn-b-record" class="primary">Записать</button>
+      <button type="button" id="btn-b-finish" class="danger" hidden>Завершить запись</button>
+      <div id="b-take" hidden>
+        <button type="button" id="btn-b-listen" aria-pressed="false">Переслушать мою</button>
+        <p id="b-empty" class="hint" hidden>Запись вышла пустой, вместо неё будет тишина. Можно перезаписать.</p>
+      </div>
+      <div class="nav">
+        <button type="button" id="btn-b-back">Назад</button>
+        <button type="button" id="btn-b-next" class="primary">Дальше</button>
+      </div>
     </section>
 
     <section data-screen="final" hidden>
       <h2>Результат</h2>
+      <p class="lead">Слушаем, что вышло, и угадываем песню.</p>
+      <button type="button" id="btn-result" class="primary" aria-pressed="false">Слушать результат</button>
+      <p id="result-info" class="hint" data-seconds="0"></p>
+      <button type="button" id="btn-original" aria-pressed="false">Показать оригинал</button>
+      <button type="button" id="btn-final-new">Новая игра</button>
     </section>
 
     <div id="chunk-box" class="chunk-box">
