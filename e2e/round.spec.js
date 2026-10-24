@@ -25,7 +25,7 @@ test('start screen shows title, slider and the silent-mode hint', async ({ page 
   await expect(page.locator('section[data-screen="start"]')).toBeVisible();
   await expect(page.locator('section[data-screen="A"]')).toBeHidden();
   await expect(page.locator('#chunk-slider')).toBeVisible();
-  await expect(page.locator('#chunk-value')).toHaveText('5 с');
+  await expect(page.locator('#chunk-value')).toHaveText('2 с');
   await page.locator('#chunk-slider').fill('4.5');
   await expect(page.locator('#chunk-value')).toHaveText('4,5 с');
   await expect(page.locator('#hint-silent')).toHaveText('Нет звука? Выключи бесшумный режим');

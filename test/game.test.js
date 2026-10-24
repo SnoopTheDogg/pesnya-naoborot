@@ -7,7 +7,7 @@ import {
 
 test('newGame defaults', () => {
   assert.deepEqual(newGame(), {
-    phase: 'A', chunkSec: 5, aDurationSec: null, n: 0, current: 0, takes: [],
+    phase: 'A', chunkSec: 2, aDurationSec: null, n: 0, current: 0, takes: [],
   });
   assert.equal(newGame(3).chunkSec, 3);
 });
@@ -24,13 +24,13 @@ test('functions return new objects and do not mutate input', () => {
   const s = newGame();
   const t = setChunkSec(s, 3);
   assert.notEqual(t, s);
-  assert.equal(s.chunkSec, 5);
+  assert.equal(s.chunkSec, 2);
 });
 
 test('setChunkSec is ignored after startB', () => {
   const s = startB(setRecordingA(newGame(), 10));
   assert.equal(s.phase, 'B');
-  assert.equal(setChunkSec(s, 2), s);
+  assert.equal(setChunkSec(s, 6), s);
 });
 
 test('setRecordingA only in phase A', () => {

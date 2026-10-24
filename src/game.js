@@ -4,7 +4,7 @@ import { chunkCount, MIN_A_SEC } from './audio-math.js';
 const MIN_CHUNK_SEC = 1;
 const MAX_CHUNK_SEC = 8;
 
-export function newGame(chunkSec = 5) {
+export function newGame(chunkSec = 2) {
   return { phase: 'A', chunkSec, aDurationSec: null, n: 0, current: 0, takes: [] };
 }
 
