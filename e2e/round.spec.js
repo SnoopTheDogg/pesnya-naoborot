@@ -1,4 +1,5 @@
 // End-to-end round in Chromium with a fake microphone fed from e2e/fixtures/voice.wav.
+import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 
 const btn = (page, name) => page.getByRole('button', { name, exact: true });
@@ -895,6 +896,151 @@ test('«Новая игра» on the final screen forgets the saved round', asyn
   await reload(page);
   await expect(body(page)).toHaveAttribute('data-saved-round', 'no');
   await expect(btn(page, 'Продолжить')).toBeHidden();
+});
+
+// ---- «Сохранить запись» ----
+
+const WAV_NAME = /^pesnya-naoborot-\d\d-\d\d\.wav$/;
+
+// Replaces the share API: canShare accepts files, share keeps what it was given
+// (and whether the tap's user activation was still active) and then rejects with
+// the error name `failWith`, or resolves when it is null. With `failWith`
+// 'none' there is no share API at all.
+async function stubShare(page, failWith = null) {
+  await page.addInitScript((failWith) => {
+    window.__shared = [];
+    if (failWith === 'none') {
+      Object.defineProperty(navigator, 'canShare', { value: undefined, configurable: true });
+      Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
+      return;
+    }
+    navigator.canShare = (data) => Boolean(data && data.files && data.files.length);
+    navigator.share = async (data) => {
+      window.__shared.push({ data, active: navigator.userActivation.isActive });
+      if (failWith) throw new DOMException('share failed by test', failWith);
+    };
+  }, failWith);
+}
+
+// What the stubbed share was given: the file's name, type, size and parsed header.
+const sharedFile = (page) =>
+  page.evaluate(async () => {
+    if (!window.__shared.length) return null;
+    const { data, active } = window.__shared[0];
+    const f = data.files[0];
+    const b = new Uint8Array(await f.arrayBuffer());
+    const v = new DataView(b.buffer);
+    const tag = (at) => String.fromCharCode(...b.subarray(at, at + 4));
+    return {
+      calls: window.__shared.length,
+      active,
+      title: data.title,
+      count: data.files.length,
+      name: f.name,
+      type: f.type,
+      size: f.size,
+      riff: tag(0),
+      wave: tag(8),
+      rate: v.getUint32(24, true),
+      dataBytes: v.getUint32(40, true),
+    };
+  });
+
+// The same fields, read from a downloaded file.
+const wavOfFile = (buf) => ({
+  size: buf.length,
+  riff: buf.toString('ascii', 0, 4),
+  wave: buf.toString('ascii', 8, 12),
+  rate: buf.readUInt32LE(24),
+  dataBytes: buf.readUInt32LE(40),
+});
+
+// The saved WAV holds the result: its length over its rate is the shown duration.
+async function expectResultWav(page, wav) {
+  const sec = Number(await page.locator('#result-info').getAttribute('data-seconds'));
+  expect(wav.riff).toBe('RIFF');
+  expect(wav.wave).toBe('WAVE');
+  expect(wav.size).toBe(44 + wav.dataBytes);
+  const n = wav.dataBytes / 2;
+  expect(Number.isInteger(n)).toBe(true);
+  expect(Math.abs(n / wav.rate - sec)).toBeLessThanOrEqual(0.006);
+}
+
+test('«Сохранить запись» shares the result as a WAV file', async ({ page }) => {
+  await stubShare(page);
+  await toFinal(page);
+  // it sits between the result and «Показать оригинал»
+  const order = await page.evaluate(() =>
+    [...document.querySelectorAll('section[data-screen="final"] button, #result-info')].map(
+      (n) => n.id,
+    ),
+  );
+  expect(order).toEqual(['btn-result', 'result-info', 'btn-save', 'btn-original', 'btn-final-new']);
+  // saving does not stop a playing result
+  await btn(page, 'Слушать результат').click();
+  await expect(btn(page, 'Слушать результат')).toHaveClass(/\bplaying\b/);
+  await btn(page, 'Сохранить запись').click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(1);
+  const wav = await sharedFile(page);
+  expect(wav.active).toBe(true); // shared inside the tap, as iOS requires
+  expect(wav.count).toBe(1);
+  expect(wav.title).toBe('Песня наоборот');
+  expect(wav.name).toMatch(WAV_NAME);
+  expect(wav.type).toBe('audio/wav');
+  await expectResultWav(page, wav);
+  await expect(btn(page, 'Слушать результат')).toHaveClass(/\bplaying\b/);
+  await expect(page.locator('#error')).toBeHidden();
+});
+
+test('«Сохранить запись» without a share API downloads the WAV', async ({ page }) => {
+  await stubShare(page, 'none');
+  await toFinal(page);
+  const download = page.waitForEvent('download');
+  await btn(page, 'Сохранить запись').click();
+  const d = await download;
+  expect(d.suggestedFilename()).toMatch(WAV_NAME);
+  await expectResultWav(page, wavOfFile(await readFile(await d.path())));
+  await expect(page.locator('#error')).toBeHidden();
+});
+
+test('«Сохранить запись» cancelled in the share sheet: no error, no download', async ({ page }) => {
+  await stubShare(page, 'AbortError');
+  await toFinal(page);
+  let downloads = 0;
+  page.on('download', () => (downloads += 1));
+  await btn(page, 'Сохранить запись').click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(1);
+  await page.waitForTimeout(500);
+  await expect(page.locator('#error')).toBeHidden();
+  expect(downloads).toBe(0);
+  // it can be tapped again
+  await btn(page, 'Сохранить запись').click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(2);
+});
+
+test('«Сохранить запись» when sharing fails: real error, then a download', async ({ page }) => {
+  await stubShare(page, 'NotAllowedError');
+  await toFinal(page);
+  const download = page.waitForEvent('download');
+  await btn(page, 'Сохранить запись').click();
+  const d = await download;
+  expect(d.suggestedFilename()).toMatch(WAV_NAME);
+  await expect(page.locator('#error')).toContainText('NotAllowedError: share failed by test');
+});
+
+test('«Сохранить запись» works on a final screen restored after a reload', async ({ page }) => {
+  await stubShare(page);
+  await toFinal(page);
+  await reload(page);
+  await btn(page, 'Продолжить').click();
+  await expect(section(page, 'final')).toBeVisible();
+  await btn(page, 'Сохранить запись').click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(1);
+  const wav = await sharedFile(page);
+  expect(wav.name).toMatch(WAV_NAME);
+  expect(Number(await page.locator('#result-info').getAttribute('data-seconds'))).toBeGreaterThan(1.5);
+  await expectResultWav(page, wav);
+  await expect(page.locator('#error')).toBeHidden();
 });
 
 test('IndexedDB that cannot open: real error once, the game still works', async ({ page }) => {

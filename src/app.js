@@ -14,6 +14,7 @@ import {
   stop,
 } from './player.js';
 import * as storage from './storage.js';
+import { encodeWav, wavFileName } from './wav.js';
 
 const MAX_RECORD_SEC = 60;
 // After a take ends the buttons under the finger change; a second tap of the
@@ -31,6 +32,10 @@ const STORAGE_HELP = 'Играть можно, но после перезагр�
 // «Новая игра» waits for the saved round to be looked for, but not forever
 const LOAD_WAIT_MS = 3000;
 const NEW_GAME_CONFIRM = 'Начать новую игру? Записи этого раунда удалятся.';
+const SHARE_TITLE = 'Песня наоборот';
+const SHARE_HELP = 'Поделиться не вышло, скачиваю файл напрямую';
+// a downloaded recording's object URL is kept this long, then released
+const DOWNLOAD_URL_MS = 60_000;
 
 // ---- app state ----
 let state = game.newGame();
@@ -102,6 +107,7 @@ const el = {
   btnBNext: $('#btn-b-next'),
   btnResult: $('#btn-result'),
   resultInfo: $('#result-info'),
+  btnSave: $('#btn-save'),
   btnOriginal: $('#btn-original'),
   btnFinalNew: $('#btn-final-new'),
 };
@@ -673,6 +679,47 @@ onTap(el.btnBBack, () => {
 // ---- final ----
 onTap(el.btnResult, () => togglePlay('result', () => audio.result));
 onTap(el.btnOriginal, () => togglePlay('A', () => audio.A));
+
+// «Сохранить запись»: the result as a WAV file. iOS only opens the share sheet
+// (with «Сохранить в Файлы») inside the tap, so the file is built and share()
+// called synchronously. Without sharing, the file is downloaded instead.
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file.name;
+  a.hidden = true;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_MS);
+}
+
+function canShareFile(file) {
+  try {
+    return Boolean(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
+  } catch (e) {
+    console.error(e);
+    return false;
+  }
+}
+
+function saveRecording() {
+  if (!audio.result) return undefined;
+  const rate = roundRate || getContext().sampleRate;
+  const file = new File([encodeWav(audio.result, rate)], wavFileName(new Date()), { type: 'audio/wav' });
+  if (!canShareFile(file)) {
+    downloadFile(file);
+    return undefined;
+  }
+  return navigator.share({ files: [file], title: SHARE_TITLE }).catch((e) => {
+    if (e && e.name === 'AbortError') return; // closed the share sheet
+    showError(e, SHARE_HELP);
+    downloadFile(file);
+  });
+}
+
+onTap(el.btnSave, saveRecording);
 onTap(el.btnFinalNew, () => {
   if (!window.confirm(NEW_GAME_CONFIRM)) return;
   resetRound('start');
