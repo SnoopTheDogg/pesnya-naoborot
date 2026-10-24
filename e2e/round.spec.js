@@ -915,8 +915,17 @@ async function stubShare(page, failWith = null) {
       return;
     }
     navigator.canShare = (data) => Boolean(data && data.files && data.files.length);
+    let pending = false;
     navigator.share = async (data) => {
       window.__shared.push({ data, active: navigator.userActivation.isActive });
+      // like WebKit: a second share while the sheet is open is refused
+      if (pending) throw new DOMException('share already in progress', 'InvalidStateError');
+      if (failWith === 'slow') {
+        pending = true;
+        await new Promise((r) => setTimeout(r, 1500));
+        pending = false;
+        return;
+      }
       if (failWith) throw new DOMException('share failed by test', failWith);
     };
   }, failWith);
@@ -1177,4 +1186,19 @@ test('home-screen manifest is linked and its icons are served as PNG', async ({ 
   const tr = await request.get(new URL(touch, page.url()).href);
   expect(tr.status()).toBe(200);
   expect(tr.headers()['content-type']).toContain('image/png');
+});
+
+test('«Сохранить запись» double tap opens one share sheet, no error, no download', async ({ page }) => {
+  await stubShare(page, 'slow');
+  await toFinal(page);
+  let downloads = 0;
+  page.on('download', () => { downloads += 1; });
+  await btn(page, 'Сохранить запись').dblclick();
+  await page.waitForTimeout(2000);
+  expect(await page.evaluate(() => window.__shared.length)).toBe(1);
+  await expect(page.locator('#error')).toBeHidden();
+  expect(downloads).toBe(0);
+  // after the sheet closes, saving works again
+  await btn(page, 'Сохранить запись').click();
+  await expect.poll(() => page.evaluate(() => window.__shared.length)).toBe(2);
 });

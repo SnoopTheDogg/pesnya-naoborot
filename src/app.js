@@ -704,19 +704,33 @@ function canShareFile(file) {
   }
 }
 
+// a share sheet is open: a second share would be refused (InvalidStateError)
+let sharing = false;
+
 function saveRecording() {
-  if (!audio.result) return undefined;
+  if (!audio.result || sharing) return undefined;
   const rate = roundRate || getContext().sampleRate;
   const file = new File([encodeWav(audio.result, rate)], wavFileName(new Date()), { type: 'audio/wav' });
   if (!canShareFile(file)) {
     downloadFile(file);
     return undefined;
   }
-  return navigator.share({ files: [file], title: SHARE_TITLE }).catch((e) => {
-    if (e && e.name === 'AbortError') return; // closed the share sheet
-    showError(e, SHARE_HELP);
-    downloadFile(file);
-  });
+  let shared;
+  try {
+    shared = navigator.share({ files: [file], title: SHARE_TITLE });
+  } catch (e) {
+    shared = Promise.reject(e); // an old WebKit may throw instead of rejecting
+  }
+  sharing = true;
+  return shared
+    .catch((e) => {
+      if (e && e.name === 'AbortError') return; // closed the share sheet
+      showError(e, SHARE_HELP);
+      downloadFile(file);
+    })
+    .finally(() => {
+      sharing = false;
+    });
 }
 
 onTap(el.btnSave, saveRecording);
